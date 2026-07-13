@@ -1,4 +1,4 @@
-import type { RiskReport, HrAnalysis, LlmProviderResult } from '@/types';
+import type { RiskReport, HrAnalysis, LlmProviderResult } from '../../types';
 import axios from 'axios';
 
 export class QwenCloudProvider {

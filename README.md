@@ -154,6 +154,7 @@ QWENCLOUD_API_KEY=your-api-key
    - 选择你的 GitHub 仓库
    - 配置：Build Command → `cd backend && npm install && npm run build`, Start Command → `cd backend && npm start`
    - 添加环境变量：`AI_PROVIDER`, `SILICONFLOW_API_KEY`, `QWENCLOUD_API_KEY`
+   - 添加 `CORS_ORIGIN=https://your-vercel-project.vercel.app`，多个前端域名使用逗号分隔
 
 3. **配置前端 API 地址**
    - 在 Vercel 项目设置中添加环境变量 `VITE_API_BASE_URL=https://your-render-service.onrender.com/api`

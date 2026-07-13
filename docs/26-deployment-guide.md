@@ -64,6 +64,7 @@ Render 提供免费的 Node.js 后端托管服务，适合小型 API 服务。
      - `SILICONFLOW_API_KEY` = 你的 SiliconFlow API Key
      - `QWENCLOUD_API_KEY` = 你的 QwenCloud API Key（可选）
      - `PORT` = `10000`（Render 要求）
+     - `CORS_ORIGIN` = `https://你的 Vercel 域名`（多个域名使用逗号分隔）
      - `NODE_ENV` = `production`
 
 5. **部署服务**

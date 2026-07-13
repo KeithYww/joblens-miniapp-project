@@ -1,20 +1,20 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import type { RiskReport, HrAnalysis, ApiError } from '@/types';
+import type { RiskReport, HrAnalysis, ApiError } from '../types';
 import {
   DetectRequestSchema,
   HrAnalysisRequestSchema,
   InterviewFeedbackRequestSchema,
   ReportFeedbackRequestSchema,
-} from '@/schemas';
-import { prisma, isDbAvailable } from '@/db/prisma';
-import { redis, isRedisAvailable } from '@/db/redis';
-import { RuleBasedProvider, createLlmProviderWithFallback } from '@/services/llm';
+} from '../schemas';
+import { prisma, isDbAvailable } from '../db/prisma';
+import { redis, isRedisAvailable } from '../db/redis';
+import { createLlmProviderWithFallback } from '../services/llm';
 import {
   checkRateLimit,
   incrementRateLimit,
   setCaptchaExempt,
   verifyCaptcha,
-} from '@/services/rateLimit';
+} from '../services/rateLimit';
 import crypto from 'crypto';
 
 const llmProvider = createLlmProviderWithFallback();
@@ -46,6 +46,10 @@ function calculateInputHash(jdText: string, hrChatText?: string): string {
 
 const reportCache = new Map<string, RiskReport>();
 const reportStore = new Map<string, RiskReport>();
+const reportInputHashes = new Map<string, string>();
+const hrAnalysisStore = new Map<string, HrAnalysis>();
+const interviewFeedbackStore = new Map<string, unknown>();
+const reportFeedbackStore = new Map<string, unknown>();
 
 async function getReportCache(hash: string): Promise<RiskReport | null> {
   if (isRedisAvailable()) {
@@ -82,6 +86,13 @@ async function delReportCache(hash: string): Promise<void> {
     }
   }
   reportCache.delete(hash);
+}
+
+async function deleteMemoryReport(reportId: string): Promise<void> {
+  reportStore.delete(reportId);
+  const inputHash = reportInputHashes.get(reportId);
+  reportInputHashes.delete(reportId);
+  if (inputHash) await delReportCache(inputHash);
 }
 
 interface LogApiRequestParams {
@@ -195,6 +206,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
       const cachedReport = await getReportCache(inputHash);
       if (cachedReport) {
+        reportStore.set(cachedReport.report_id, cachedReport);
+        reportInputHashes.set(cachedReport.report_id, inputHash);
         await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 200, aiCalled: false });
         return reply.send(cachedReport);
       }
@@ -254,6 +267,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
       await setReportCache(inputHash, validatedReport);
       reportStore.set(validatedReport.report_id, validatedReport);
+      reportInputHashes.set(validatedReport.report_id, inputHash);
 
       try {
         await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 200, aiCalled: true, provider: llmResult.provider, model: llmResult.model, inputTokens: llmResult.inputTokens, outputTokens: llmResult.outputTokens, latencyMs, costEstimate: llmResult.costEstimate });
@@ -326,11 +340,34 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const params = request.params as { id: string };
 
     try {
+      const memReport = reportStore.get(params.id);
+      if (memReport && !isDbAvailable()) {
+        await deleteMemoryReport(params.id);
+        return reply.send({
+          status: 'deleted',
+          message: '该报告及相关数据已删除。',
+          deleted_at: new Date().toISOString(),
+        });
+      }
+
+      if (!isDbAvailable()) {
+        await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}`, method: 'DELETE', visitorId, ip, httpStatus: 404, errorCode: 'REPORT_NOT_FOUND', errorMessage: '报告不存在' });
+        return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在。'));
+      }
+
       const report = await prisma.jobReport.findUnique({
         where: { report_id: params.id },
       });
 
       if (!report) {
+        if (memReport) {
+          await deleteMemoryReport(params.id);
+          return reply.send({
+            status: 'deleted',
+            message: '该报告及相关数据已删除。',
+            deleted_at: new Date().toISOString(),
+          });
+        }
         await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}`, method: 'DELETE', visitorId, ip, httpStatus: 404, errorCode: 'REPORT_NOT_FOUND', errorMessage: '报告不存在' });
         return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在。'));
       }
@@ -340,6 +377,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         data: { is_deleted: true, deleted_at: new Date() },
       });
 
+      await deleteMemoryReport(params.id);
       await delReportCache(report.input_hash);
 
       await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}`, method: 'DELETE', visitorId, ip, httpStatus: 200 });
@@ -379,8 +417,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       validatedAnalysis.hr_analysis_id = generateHrAnalysisId();
       validatedAnalysis.created_at = new Date().toISOString();
 
-      await prisma.hrAnalysis.create({
-        data: {
+      if (isDbAvailable()) {
+        await prisma.hrAnalysis.create({
+          data: {
           hr_analysis_id: validatedAnalysis.hr_analysis_id,
           report_id: params.id,
           user_question: result.data.user_question,
@@ -395,8 +434,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           analysis_status: 'completed',
           provider: llmResult.provider,
           model: llmResult.model,
-        },
-      });
+          },
+        });
+      } else {
+        hrAnalysisStore.set(validatedAnalysis.hr_analysis_id, validatedAnalysis);
+      }
 
       await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}/hr-analysis`, method: 'POST', visitorId, ip, httpStatus: 200, aiCalled: true, provider: llmResult.provider, model: llmResult.model });
 
@@ -429,8 +471,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       validatedAnalysis.hr_analysis_id = generateHrAnalysisId();
       validatedAnalysis.created_at = new Date().toISOString();
 
-      await prisma.hrAnalysis.create({
-        data: {
+      if (isDbAvailable()) {
+        await prisma.hrAnalysis.create({
+          data: {
           hr_analysis_id: validatedAnalysis.hr_analysis_id,
           user_question: result.data.user_question,
           hr_reply: result.data.hr_reply,
@@ -444,8 +487,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           analysis_status: 'completed',
           provider: llmResult.provider,
           model: llmResult.model,
-        },
-      });
+          },
+        });
+      } else {
+        hrAnalysisStore.set(validatedAnalysis.hr_analysis_id, validatedAnalysis);
+      }
 
       await logApiRequest({ requestId, apiPath: '/api/hr-analysis', method: 'POST', visitorId, ip, httpStatus: 200, aiCalled: true, provider: llmResult.provider, model: llmResult.model });
 
@@ -470,8 +516,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
       const feedbackId = generateFeedbackId();
 
-      await prisma.interviewFeedback.create({
-        data: {
+      if (isDbAvailable()) {
+        await prisma.interviewFeedback.create({
+          data: {
           feedback_id: feedbackId,
           report_id: result.data.report_id,
           company_name: result.data.company_name,
@@ -487,8 +534,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           recommend_to_others: result.data.recommend_to_others,
           visitor_id: visitorId,
           ip_address: ip,
-        },
-      });
+          },
+        });
+      } else {
+        interviewFeedbackStore.set(feedbackId, result.data);
+      }
 
       await logApiRequest({ requestId, apiPath: '/api/interview-feedbacks', method: 'POST', visitorId, ip, httpStatus: 200 });
 
@@ -518,16 +568,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
       const feedbackId = generateReportFeedbackId();
 
-      await prisma.reportFeedback.create({
-        data: {
+      if (isDbAvailable()) {
+        await prisma.reportFeedback.create({
+          data: {
           feedback_id: feedbackId,
           report_id: result.data.report_id,
           feedback_type: result.data.feedback_type,
           content: result.data.content,
           visitor_id: visitorId,
           ip_address: ip,
-        },
-      });
+          },
+        });
+      } else {
+        reportFeedbackStore.set(feedbackId, result.data);
+      }
 
       await logApiRequest({ requestId, apiPath: '/api/report-feedbacks', method: 'POST', visitorId, ip, httpStatus: 200 });
 

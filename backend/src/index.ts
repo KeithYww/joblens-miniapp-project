@@ -1,8 +1,14 @@
 import fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
-import { registerRoutes } from '@/routes';
-import { initRedis } from '@/db/redis';
-import { checkDbConnection } from '@/db/prisma';
+import { registerRoutes } from './routes';
+import { initRedis } from './db/redis';
+import { checkDbConnection } from './db/prisma';
+
+const defaultCorsOrigins = ['http://localhost:5173', 'http://localhost:3000'];
+const configuredCorsOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
 
 async function createServer(): Promise<FastifyInstance> {
   const app = fastify({
@@ -13,7 +19,7 @@ async function createServer(): Promise<FastifyInstance> {
   });
 
   await app.register(cors, {
-    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    origin: [...defaultCorsOrigins, ...configuredCorsOrigins],
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-visitor-id'],
   });

@@ -1,6 +1,4 @@
-import type { RiskReport, HrAnalysis, LlmProviderResult } from '@/types';
-import { RiskReportSchema, HrAnalysisSchema } from '@/schemas';
-import { z } from 'zod';
+import type { RiskReport, HrAnalysis, LlmProviderResult } from '../../types';
 import { SiliconFlowProvider } from './siliconflow';
 import { QwenCloudProvider } from './qwencloud';
 

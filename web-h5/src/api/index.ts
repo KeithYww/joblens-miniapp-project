@@ -8,7 +8,8 @@ import type {
   ApiError,
 } from '@/types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const configuredApiUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API_BASE_URL = configuredApiUrl.replace(/\/+$/, '').replace(/\/api$/, '');
 
 function getVisitorId(): string {
   let visitorId = localStorage.getItem('visitor_id');

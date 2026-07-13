@@ -10,7 +10,7 @@ import {
   FeedbackForm,
 } from '@/components';
 import { api } from '@/api';
-import type { RiskReport } from '@/types';
+import type { ReportFeedbackRequest, RiskReport } from '@/types';
 
 export function ReportPage() {
   const { id } = useParams<{ id: string }>();
@@ -60,7 +60,7 @@ export function ReportPage() {
     try {
       await api.feedbacks.report({
         report_id: id,
-        feedback_type: data.type as any,
+        feedback_type: data.type as ReportFeedbackRequest['feedback_type'],
         content: data.content,
       });
     } catch {
@@ -207,7 +207,7 @@ export function ReportPage() {
           </button>
           {showFeedback && (
             <div className="mt-4 pt-4 border-t border-gray-200">
-              <FeedbackForm reportId={report.report_id} onSubmit={handleFeedback} />
+              <FeedbackForm onSubmit={handleFeedback} />
             </div>
           )}
         </div>

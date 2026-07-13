@@ -1,4 +1,4 @@
-import { redis, isRedisAvailable } from '@/db/redis';
+import { redis, isRedisAvailable } from '../../db/redis';
 
 const RATE_LIMIT_CONFIG = {
   ip: {

@@ -286,10 +286,8 @@ export function TextInputPanel({
 }
 
 export function FeedbackForm({
-  reportId: _reportId,
   onSubmit,
 }: {
-  reportId?: string;
   onSubmit: (data: { type: string; content: string }) => void;
 }) {
   const [type, setType] = useState<string>('判断不准');
