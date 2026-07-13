@@ -54,7 +54,14 @@ joblens-miniapp-project/
 │   ├── 06-web-h5-pages.md        # Web/H5 页面说明
 │   ├── 07-launch-check.md        # 上线前检查
 │   ├── 08-screenshot-ocr-research.md # 岗位截图识别调研
-│   └── 09-free-ocr-options.md    # 免费/自建 OCR 方案
+│   ├── 09-free-ocr-options.md    # 免费/自建 OCR 方案
+│   ├── 10-web-h5-technical-review.md # Web/H5 技术专家评审
+│   ├── 11-technical-docs-plan.md # 技术文档规划
+│   ├── 12-system-architecture.md # 总体系统架构
+│   ├── 13-frontend-implementation.md # 前端实现方案
+│   ├── 14-backend-implementation.md # 后端实现方案
+│   ├── 15-ai-risk-engine.md      # AI 风险引擎设计
+│   └── 16-deployment-cost.md     # 部署与成本评估
 ├── web-h5/                       # Web/H5 前端工程预留目录
 ├── backend/                      # 后端 API / OCR 服务预留目录
 └── design/                       # 设计稿、原型、物料预留目录
