@@ -63,7 +63,13 @@ joblens-miniapp-project/
 │   ├── 15-ai-risk-engine.md      # AI 风险引擎设计
 │   ├── 16-deployment-cost.md     # 部署与成本评估
 │   ├── 17-free-llm-options.md    # 免费/低成本大模型方案
-│   └── 18-expert-review-before-development.md # 开发前专家评审汇总
+│   ├── 18-expert-review-before-development.md # 开发前专家评审汇总
+│   ├── 19-api-contract.md        # P0 API 协议冻结版本
+│   ├── 20-ai-output-schema.md    # P0 AI 输出 Schema 冻结版本
+│   ├── 21-database-schema.md     # P0 数据库 Schema 冻结版本
+│   ├── 22-privacy-retention-design.md # P0 隐私与数据保留策略
+│   ├── 23-test-samples-plan.md   # P0 测试样本计划
+│   └── 24-rate-limit-rules.md    # P0 限流与验证码规则
 ├── web-h5/                       # Web/H5 前端工程预留目录
 ├── backend/                      # 后端 API / OCR 服务预留目录
 └── design/                       # 设计稿、原型、物料预留目录
