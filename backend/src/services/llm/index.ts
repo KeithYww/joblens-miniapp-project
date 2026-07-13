@@ -2,6 +2,7 @@ import type { RiskReport, HrAnalysis, LlmProviderResult } from '@/types';
 import { RiskReportSchema, HrAnalysisSchema } from '@/schemas';
 import { z } from 'zod';
 import { SiliconFlowProvider } from './siliconflow';
+import { QwenCloudProvider } from './qwencloud';
 
 interface LlmProvider {
   name: string;
@@ -330,6 +331,7 @@ class RuleBasedProvider implements LlmProvider {
 
 export { LlmProvider, RuleBasedProvider, applyAllRules, applyEvidenceValidation, applyStrongRiskCorrection, applyAntiMisjudgmentRules };
 export { SiliconFlowProvider } from './siliconflow';
+export { QwenCloudProvider } from './qwencloud';
 
 export function createLlmProvider(): LlmProvider {
   const providerType = process.env.AI_PROVIDER || 'rule-based';
@@ -337,6 +339,8 @@ export function createLlmProvider(): LlmProvider {
   switch (providerType) {
     case 'siliconflow':
       return new SiliconFlowProvider();
+    case 'qwen-cloud':
+      return new QwenCloudProvider();
     case 'rule-based':
     case 'mock':
     default:
