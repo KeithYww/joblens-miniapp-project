@@ -1,6 +1,7 @@
 import type { RiskReport, HrAnalysis, LlmProviderResult } from '@/types';
 import { RiskReportSchema, HrAnalysisSchema } from '@/schemas';
 import { z } from 'zod';
+import { SiliconFlowProvider } from './siliconflow';
 
 interface LlmProvider {
   name: string;
@@ -176,8 +177,8 @@ function applyAllRules(report: RiskReport, jdText: string, hrChatText?: string):
   return result;
 }
 
-class MockProvider implements LlmProvider {
-  name = 'mock';
+class RuleBasedProvider implements LlmProvider {
+  name = 'rule-based';
 
   analyzeJobRisk(input: {
     source_platform?: string;
@@ -327,4 +328,69 @@ class MockProvider implements LlmProvider {
   }
 }
 
-export { LlmProvider, MockProvider, applyAllRules, applyEvidenceValidation, applyStrongRiskCorrection, applyAntiMisjudgmentRules };
+export { LlmProvider, RuleBasedProvider, applyAllRules, applyEvidenceValidation, applyStrongRiskCorrection, applyAntiMisjudgmentRules };
+export { SiliconFlowProvider } from './siliconflow';
+
+export function createLlmProvider(): LlmProvider {
+  const providerType = process.env.AI_PROVIDER || 'rule-based';
+  
+  switch (providerType) {
+    case 'siliconflow':
+      return new SiliconFlowProvider();
+    case 'rule-based':
+    case 'mock':
+    default:
+      return new RuleBasedProvider();
+  }
+}
+
+export class FallbackLlmProvider implements LlmProvider {
+  name = 'fallback';
+  private primary: LlmProvider;
+  private fallback: LlmProvider;
+  private primaryFailed = false;
+
+  constructor(primary: LlmProvider, fallback: LlmProvider) {
+    this.primary = primary;
+    this.fallback = fallback;
+  }
+
+  async analyzeJobRisk(input: Parameters<LlmProvider['analyzeJobRisk']>[0]): Promise<LlmProviderResult> {
+    if (!this.primaryFailed) {
+      try {
+        const result = await this.primary.analyzeJobRisk(input);
+        return result;
+      } catch (err) {
+        console.warn(`Primary provider ${this.primary.name} failed, falling back to rule-based:`, (err as Error).message);
+        this.primaryFailed = true;
+      }
+    }
+    const result = await this.fallback.analyzeJobRisk(input);
+    result.provider = `fallback(${this.primary.name})`;
+    return result;
+  }
+
+  async analyzeHrReply(input: Parameters<LlmProvider['analyzeHrReply']>[0]): Promise<LlmProviderResult> {
+    if (!this.primaryFailed) {
+      try {
+        const result = await this.primary.analyzeHrReply(input);
+        return result;
+      } catch (err) {
+        console.warn(`Primary provider ${this.primary.name} failed, falling back to rule-based:`, (err as Error).message);
+        this.primaryFailed = true;
+      }
+    }
+    const result = await this.fallback.analyzeHrReply(input);
+    result.provider = `fallback(${this.primary.name})`;
+    return result;
+  }
+}
+
+export function createLlmProviderWithFallback(): LlmProvider {
+  const primary = createLlmProvider();
+  if (primary.name === 'rule-based') {
+    return primary;
+  }
+  const fallback = new RuleBasedProvider();
+  return new FallbackLlmProvider(primary, fallback);
+}

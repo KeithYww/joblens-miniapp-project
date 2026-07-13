@@ -8,7 +8,7 @@ import {
 } from '@/schemas';
 import { prisma, isDbAvailable } from '@/db/prisma';
 import { redis, isRedisAvailable } from '@/db/redis';
-import { MockProvider } from '@/services/llm';
+import { RuleBasedProvider, createLlmProviderWithFallback } from '@/services/llm';
 import {
   checkRateLimit,
   incrementRateLimit,
@@ -17,7 +17,7 @@ import {
 } from '@/services/rateLimit';
 import crypto from 'crypto';
 
-const llmProvider = new MockProvider();
+const llmProvider = createLlmProviderWithFallback();
 
 function generateReportId(): string {
   return `rep_${crypto.randomBytes(6).toString('hex')}`;
