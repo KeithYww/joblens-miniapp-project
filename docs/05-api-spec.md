@@ -1,0 +1,186 @@
+# 05 API 草案
+
+## 说明
+
+首版建议使用微信小程序 + 云开发。这里的 API 可以理解为云函数接口，也可以迁移为传统后端 HTTP API。
+
+## detectJobRisk
+
+岗位风险检测。
+
+### 请求
+
+```json
+{
+  "source_platform": "BOSS直聘",
+  "company_name": "某某公司",
+  "job_title": "储备主管",
+  "jd_text": "岗位职责...",
+  "hr_chat_text": "可选，HR聊天内容..."
+}
+```
+
+### 响应
+
+```json
+{
+  "report_id": "rep_001",
+  "overall_score": 78,
+  "risk_level": "高",
+  "confidence": "中",
+  "predicted_role": "销售/客户开发岗",
+  "risk_types": ["管理岗包装销售岗", "薪资不透明"],
+  "sub_scores": {
+    "jd_risk": { "score": 82, "weight": 0.35 },
+    "hr_risk": { "score": 75, "weight": 0.20 },
+    "company_risk": { "score": null, "weight": 0.25, "status": "missing" },
+    "feedback_risk": { "score": null, "weight": 0.20, "status": "missing" }
+  },
+  "strong_risk_adjustment": 8,
+  "evidence": [
+    "JD中出现“管理人才、实作期、市场实践、业绩分解”组合",
+    "HR未正面回答是否有个人销售指标"
+  ],
+  "missing_info": [
+    "固定无责底薪",
+    "是否有个人销售指标",
+    "劳动合同主体",
+    "社保缴纳主体"
+  ],
+  "questions": [
+    "这个岗位前 1-3 个月是否有个人销售指标？",
+    "是否需要自己开发客户或销售保险产品？",
+    "固定无责底薪是多少？",
+    "劳动合同签署主体是哪家公司？"
+  ],
+  "recommendation": "建议先电话确认核心问题，不建议直接线下面试",
+  "disclaimer": "本结果仅供求职决策参考，不构成法律认定。"
+}
+```
+
+## analyzeHrReply
+
+分析 HR 回复是否回避关键问题。
+
+### 请求
+
+```json
+{
+  "report_id": "rep_001",
+  "user_question": "是否需要自己开发客户？",
+  "hr_reply": "具体到公司会详细介绍，我们主要是培养管理人才。"
+}
+```
+
+### 响应
+
+```json
+{
+  "avoidance_score": 86,
+  "risk_level": "高",
+  "analysis": "HR未正面回答是否需要个人开发客户，使用“到公司详细介绍”和“培养管理人才”替代明确说明。",
+  "next_questions": [
+    "是否有个人销售指标？",
+    "客户来源由公司提供，还是需要自己开发？",
+    "如果不做销售，这个岗位是否仍然成立？"
+  ]
+}
+```
+
+## submitInterviewFeedback
+
+提交匿名面试反馈。
+
+### 请求
+
+```json
+{
+  "report_id": "rep_001",
+  "company_name": "某某公司",
+  "job_title": "储备主管",
+  "source_platform": "BOSS直聘",
+  "jd_claim": "管理岗，负责团队管理",
+  "interview_actual": "实际要求开发客户并销售保险产品",
+  "involves_sales": true,
+  "involves_fee": false,
+  "involves_training_loan": false,
+  "involves_deposit": false,
+  "subject_mismatch": false,
+  "recommend_to_others": "不推荐",
+  "is_public": true
+}
+```
+
+### 响应
+
+```json
+{
+  "feedback_id": "fb_001",
+  "status": "submitted",
+  "message": "已匿名提交，审核后将用于优化岗位风险判断。"
+}
+```
+
+## submitReportFeedback
+
+报告纠错。
+
+### 请求
+
+```json
+{
+  "report_id": "rep_001",
+  "feedback_type": "判断不准",
+  "content": "这个岗位实际是正常销售岗，JD里已经写清楚了。"
+}
+```
+
+### 响应
+
+```json
+{
+  "status": "submitted",
+  "message": "已收到反馈，我们会用于优化模型。"
+}
+```
+
+## getReport
+
+获取报告详情。
+
+### 请求
+
+```json
+{
+  "report_id": "rep_001"
+}
+```
+
+### 响应
+
+返回 `detectJobRisk` 的报告结构。
+
+## createEnterpriseAppeal
+
+企业申诉入口。
+
+### 请求
+
+```json
+{
+  "company_name": "某某公司",
+  "contact_name": "张三",
+  "contact_info": "email@example.com",
+  "appeal_content": "该岗位描述与报告判断不一致，请复核。",
+  "proof_files": []
+}
+```
+
+### 响应
+
+```json
+{
+  "appeal_id": "ap_001",
+  "status": "submitted"
+}
+```
