@@ -61,7 +61,8 @@ joblens-miniapp-project/
 │   ├── 13-frontend-implementation.md # 前端实现方案
 │   ├── 14-backend-implementation.md # 后端实现方案
 │   ├── 15-ai-risk-engine.md      # AI 风险引擎设计
-│   └── 16-deployment-cost.md     # 部署与成本评估
+│   ├── 16-deployment-cost.md     # 部署与成本评估
+│   └── 17-free-llm-options.md    # 免费/低成本大模型方案
 ├── web-h5/                       # Web/H5 前端工程预留目录
 ├── backend/                      # 后端 API / OCR 服务预留目录
 └── design/                       # 设计稿、原型、物料预留目录
@@ -74,6 +75,7 @@ joblens-miniapp-project/
 - 明确是否使用 Next.js / Vite React / Vue
 - 基于现有 H5 原型创建前端工程
 - 确定 AI 风险分析 JSON 输出协议
+- 确定大模型 Provider 策略，开发期可用免费额度，公开 MVP 建议低价付费模型兜底
 - 确定岗位截图 OCR 是否进入 P1 版本，优先评估自建 OCR，云厂商 OCR 作为兜底
 - 设计隐私说明和免责声明
 - 准备 50-100 条真实岗位样本用于测试
