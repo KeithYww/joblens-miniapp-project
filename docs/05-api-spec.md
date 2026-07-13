@@ -160,6 +160,58 @@
 
 返回 `detectJobRisk` 的报告结构。
 
+## extractJobFromImage
+
+上传岗位截图并提取岗位信息。
+
+### 请求
+
+```json
+{
+  "image_file_ids": [
+    "cloud://joblens/images/ocr_001.jpg",
+    "cloud://joblens/images/ocr_002.jpg"
+  ],
+  "image_type": "job_page",
+  "source_platform": "BOSS直聘"
+}
+```
+
+### 响应
+
+```json
+{
+  "ocr_task_id": "ocr_001",
+  "status": "success",
+  "raw_ocr_text": "岗位名称：储备主管\\n薪资：8-12K...",
+  "structured_job": {
+    "company_name": "某某公司",
+    "job_title": "储备主管",
+    "salary_range": "8-12K",
+    "location": "上海",
+    "experience_requirement": "经验不限",
+    "education_requirement": "大专",
+    "job_responsibilities": "协助团队管理、市场实践、业绩跟进...",
+    "job_requirements": "沟通能力强，抗压能力强...",
+    "benefits": "五险一金，绩效奖金",
+    "hr_chat_text": ""
+  },
+  "confidence": "中",
+  "need_user_confirm": true,
+  "warnings": [
+    "截图内容可能不完整，建议用户确认岗位职责和薪资是否识别准确。"
+  ]
+}
+```
+
+### 处理规则
+
+- 支持 1-3 张图片。
+- 单张图片建议不超过 5MB。
+- OCR 后必须进入用户确认页，不能直接生成最终报告。
+- 图片原图默认短期保存，识别完成后可删除或自动过期。
+- 不公开展示用户上传的原图和完整聊天截图。
+
 ## createEnterpriseAppeal
 
 企业申诉入口。

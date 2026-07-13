@@ -47,7 +47,8 @@ joblens-miniapp-project/
 │   ├── 04-data-model.md          # 数据模型
 │   ├── 05-api-spec.md            # API 草案
 │   ├── 06-miniprogram-pages.md   # 小程序页面说明
-│   └── 07-launch-check.md        # 上线前检查
+│   ├── 07-launch-check.md        # 上线前检查
+│   └── 08-screenshot-ocr-research.md # 岗位截图识别调研
 ├── miniprogram/                  # 小程序前端工程预留目录
 ├── cloudfunctions/               # 云函数预留目录
 └── design/                       # 设计稿、原型、物料预留目录
@@ -60,5 +61,6 @@ joblens-miniapp-project/
 - 明确是否使用原生微信小程序 + 云开发
 - 完成页面原型
 - 确定 AI 风险分析 JSON 输出协议
+- 确定岗位截图 OCR 是否进入 P1 版本
 - 设计隐私说明和免责声明
 - 准备 50-100 条真实岗位样本用于测试
