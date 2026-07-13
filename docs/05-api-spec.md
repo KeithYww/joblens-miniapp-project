@@ -4,6 +4,24 @@
 
 首版建议使用Web/H5 + 后端 API。这里的 API 可以理解为后端函数接口，也可以迁移为传统后端 HTTP API。
 
+所有高成本写接口都要支持限流和验证码校验。前端每次请求建议带上匿名访问标识，后端根据 IP、`visitor_id`、`input_hash` 和行为频率判断是否要求验证码。
+
+推荐请求头：
+
+```text
+X-Visitor-Id: visitor_xxx
+```
+
+当后端要求验证码时，前端完成验证后在请求体中附加：
+
+```json
+{
+  "captcha_token": "captcha_response_token"
+}
+```
+
+后端必须服务端校验 `captcha_token`，不能信任前端本地状态。
+
 ## detectJobRisk
 
 岗位风险检测。
@@ -16,7 +34,8 @@
   "company_name": "某某公司",
   "job_title": "储备主管",
   "jd_text": "岗位职责...",
-  "hr_chat_text": "可选，HR聊天内容..."
+  "hr_chat_text": "可选，HR聊天内容...",
+  "captcha_token": "可选，后端要求验证码时必填"
 }
 ```
 
@@ -68,7 +87,8 @@
 {
   "report_id": "rep_001",
   "user_question": "是否需要自己开发客户？",
-  "hr_reply": "具体到公司会详细介绍，我们主要是培养管理人才。"
+  "hr_reply": "具体到公司会详细介绍，我们主要是培养管理人才。",
+  "captcha_token": "可选，后端要求验证码时必填"
 }
 ```
 
@@ -107,7 +127,8 @@
   "involves_deposit": false,
   "subject_mismatch": false,
   "recommend_to_others": "不推荐",
-  "is_public": true
+  "is_public": true,
+  "captcha_token": "可选，后端要求验证码时必填"
 }
 ```
 
@@ -131,7 +152,8 @@
 {
   "report_id": "rep_001",
   "feedback_type": "判断不准",
-  "content": "这个岗位实际是正常销售岗，JD里已经写清楚了。"
+  "content": "这个岗位实际是正常销售岗，JD里已经写清楚了。",
+  "captcha_token": "可选，后端要求验证码时必填"
 }
 ```
 
@@ -173,7 +195,8 @@
     "cloud://joblens/images/ocr_002.jpg"
   ],
   "image_type": "job_page",
-  "source_platform": "BOSS直聘"
+  "source_platform": "BOSS直聘",
+  "captcha_token": "P1 上传接口建议默认必填"
 }
 ```
 
@@ -224,7 +247,8 @@
   "contact_name": "张三",
   "contact_info": "email@example.com",
   "appeal_content": "该岗位描述与报告判断不一致，请复核。",
-  "proof_files": []
+  "proof_files": [],
+  "captcha_token": "建议必填"
 }
 ```
 
@@ -234,5 +258,27 @@
 {
   "appeal_id": "ap_001",
   "status": "submitted"
+}
+```
+
+## 通用错误码
+
+| 错误码 | HTTP 状态 | 说明 | 前端处理 |
+|---|---:|---|---|
+| `VALIDATION_ERROR` | 400 | 参数格式错误或文本过长 | 标出问题字段，保留输入 |
+| `CAPTCHA_REQUIRED` | 403 | 请求较频繁，需要验证码 | 展示验证码，验证后重试 |
+| `CAPTCHA_FAILED` | 403 | 验证码校验失败 | 提示刷新验证 |
+| `RATE_LIMITED` | 429 | 超过频次限制 | 提示稍后再试 |
+| `PAYLOAD_TOO_LARGE` | 413 | 文本或图片过大 | 提示压缩或删减内容 |
+| `AI_PROVIDER_ERROR` | 502 | 大模型服务异常 | 保留输入，允许重试 |
+| `INTERNAL_ERROR` | 500 | 服务端未知错误 | 展示友好错误提示 |
+
+示例：
+
+```json
+{
+  "error": "CAPTCHA_REQUIRED",
+  "message": "请求较频繁，请先完成验证。",
+  "captcha_provider": "turnstile"
 }
 ```

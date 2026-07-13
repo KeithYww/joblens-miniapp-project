@@ -29,6 +29,7 @@ Python FastAPI + PostgreSQL + SQLAlchemy
 - 敏感词过滤
 - 错误兜底
 - 日志与成本统计
+- 验证码校验与恶意请求拦截
 
 ## API 模块
 
@@ -99,12 +100,105 @@ AI 调用有成本，必须限制滥用。
 | 单次 HR 文本 | 最大 8000 字 |
 | OCR 图片 | P1 单次最多 3 张 |
 
+限流分三层处理：
+
+```text
+正常请求 → 直接处理
+可疑请求 → 要求验证码
+高风险请求 → 拒绝并记录安全日志
+```
+
+建议阈值：
+
+| 场景 | 处理 |
+|---|---|
+| 同一 IP 10 分钟内检测超过 5 次 | 下次请求要求验证码 |
+| 同一 visitor_id 1 小时内检测超过 5 次 | 下次请求要求验证码 |
+| 同一 IP 1 小时内检测超过 20 次 | 拒绝请求，建议 1 小时后重试 |
+| 同一 visitor_id 1 天内检测超过 30 次 | 拒绝请求，建议次日再试 |
+| 反馈接口短时间大量提交 | 要求验证码，并进入审核队列 |
+| OCR 上传接口，P1 | 默认要求验证码或登录态二选一 |
+| User-Agent 缺失、异常 Referer、重复 input_hash 高频提交 | 提高风控等级，必要时拒绝 |
+
 异常时返回：
 
 ```json
 {
   "error": "RATE_LIMITED",
   "message": "检测次数较多，请稍后再试。"
+}
+```
+
+需要验证码时返回：
+
+```json
+{
+  "error": "CAPTCHA_REQUIRED",
+  "message": "请求较频繁，请先完成验证。",
+  "captcha_provider": "turnstile"
+}
+```
+
+## 验证码与接口保护
+
+验证码只作为防滥用的一层，不应替代服务端限流。前端展示验证码后，把验证码 token 随业务请求提交；后端必须调用验证码服务端校验接口，校验通过后再执行 AI 调用、反馈入库或 OCR 上传。
+
+推荐实现：
+
+| 层级 | 要求 |
+|---|---|
+| 前端 | 在检测、反馈、OCR 上传等高成本操作前支持弹出验证码 |
+| 后端 | 校验 `captcha_token`，不信任前端布尔值 |
+| Redis | 保存 IP、visitor_id、input_hash 的频次计数和短期封禁状态 |
+| API 网关 / Nginx | 限制单 IP 并发、请求体大小和异常路径扫描 |
+| 数据库 | 记录安全事件，不保存完整敏感原文 |
+| 管理侧 | 可查看异常 IP、验证码失败率、限流命中率 |
+
+可选验证码 Provider：
+
+| Provider | 判断 |
+|---|---|
+| Cloudflare Turnstile | 免费、用户打扰较低，适合 Web/H5 首版 |
+| hCaptcha | 可用性成熟，但部分用户体验一般 |
+| reCAPTCHA | 国际可用，但国内访问和隐私说明要额外评估 |
+| 国内云验证码 | 国内访问更稳定，可能产生费用 |
+
+首版优先建议使用 Cloudflare Turnstile；如果部署环境或访问区域不适合，再切换为国内云验证码。验证码 Provider 也要抽象成接口，避免后续迁移成本过高。
+
+```ts
+interface CaptchaProvider {
+  verify(input: {
+    token: string;
+    remoteIp?: string;
+    action: "detect" | "hr_analysis" | "feedback" | "ocr";
+  }): Promise<{ success: boolean; reason?: string }>;
+}
+```
+
+请求链路：
+
+```text
+请求进入
+  ↓
+基础参数校验
+  ↓
+读取 IP / visitor_id / input_hash 频次
+  ↓
+判断是否需要验证码
+  ↓
+需要验证码但未提供或校验失败 → 返回 CAPTCHA_REQUIRED 或 CAPTCHA_FAILED
+  ↓
+通过限流与验证码校验
+  ↓
+执行业务逻辑和 AI 调用
+```
+
+验证码失败时返回：
+
+```json
+{
+  "error": "CAPTCHA_FAILED",
+  "message": "验证失败，请刷新后重试。"
 }
 ```
 
@@ -173,6 +267,9 @@ Provider：
 - OCR 识别失败
 - 用户误判反馈
 - 强风险命中次数
+- 限流命中次数
+- 验证码触发、通过和失败次数
+- 异常 IP、异常 visitor_id 和重复 input_hash 频次
 
 不要记录：
 
