@@ -15,7 +15,7 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | id | string | 用户内部 ID |
-| openid | string | 微信 openid |
+| user_token | string | 匿名用户标识，可由浏览器本地生成或登录后绑定 |
 | created_at | datetime | 创建时间 |
 | last_active_at | datetime | 最近活跃时间 |
 | is_deleted | boolean | 是否已删除 |

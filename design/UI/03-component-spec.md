@@ -44,7 +44,7 @@
 
 ### 顶部导航
 
-用途：H5/Web 原型、移动 H5 顶部栏、小程序自定义导航。
+用途：H5/Web 原型、移动 H5 顶部栏、桌面 Web 顶部导航。
 
 组成：
 
@@ -354,7 +354,7 @@ Badge 必须包含文本，不允许只用颜色或图标。
 
 ## 开发映射建议
 
-| 组件 | 小程序实现 | H5/Web 实现 |
+| 组件 | 移动 H5 实现 | 桌面 Web 实现 |
 |---|---|---|
 | 顶部导航 | 自定义 navigation bar | `header` + sticky |
 | 底部操作栏 | `view` fixed + safe area | `position: sticky/fixed` |
@@ -362,8 +362,8 @@ Badge 必须包含文本，不允许只用颜色或图标。
 | 标签选择 | `view` + class state | `button` 或 `label` |
 | 风险摘要卡 | 业务组件 `risk-summary` | 组件 `RiskSummary` |
 | 追问问题卡 | 业务组件 `question-card` | 组件 `QuestionCard` |
-| Toast | `wx.showToast` | 自定义 toast 或浏览器提示 |
-| 复制 | `wx.setClipboardData` | `navigator.clipboard.writeText` |
+| Toast | 自定义 toast | 自定义 toast 或浏览器提示 |
+| 复制 | `navigator.clipboard.writeText` + 手动复制兜底 | `navigator.clipboard.writeText` |
 
 ## 可访问性
 
