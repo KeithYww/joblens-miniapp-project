@@ -1,0 +1,242 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model JobReport {
+  id                String   @id @default(cuid()) @db.VarChar(50)
+  report_id         String   @unique @db.VarChar(50)
+  
+  source_platform   String?  @db.VarChar(30)
+  company_name      String?  @db.VarChar(80)
+  job_title         String?  @db.VarChar(80)
+  jd_text           String   @db.Text
+  hr_chat_text      String?  @db.Text
+  
+  input_hash        String   @db.VarChar(64)
+  visitor_id        String?  @db.VarChar(50)
+  ip_address        String?  @db.VarChar(45)
+  
+  overall_score     Int
+  risk_level        String   @db.VarChar(10)
+  confidence        String   @db.VarChar(10)
+  predicted_role    String?  @db.VarChar(100)
+  risk_types        Json
+  sub_scores        Json
+  strong_risk_adjustment Int @default(0)
+  
+  evidence          Json
+  missing_info      Json
+  questions         Json
+  recommendation    String   @db.VarChar(200)
+  disclaimer        String   @db.VarChar(100)
+  
+  analysis_status   String   @default("pending") @db.VarChar(20)
+  provider          String?  @db.VarChar(50)
+  model             String?  @db.VarChar(50)
+  model_version     String?  @db.VarChar(20)
+  prompt_version    String?  @db.VarChar(20)
+  schema_version    String   @default("v1.0.0") @db.VarChar(20)
+  
+  latency_ms        Int?
+  input_tokens      Int?
+  output_tokens     Int?
+  cost_estimate     Decimal? @db.Decimal(10, 6)
+  
+  retention_until   DateTime?
+  is_deleted        Boolean  @default(false)
+  deleted_at        DateTime?
+  
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  @@index([report_id])
+  @@index([input_hash])
+  @@index([visitor_id])
+  @@index([created_at])
+  @@index([is_deleted])
+  @@map("job_reports")
+}
+
+model HrAnalysis {
+  id              String   @id @default(cuid()) @db.VarChar(50)
+  hr_analysis_id  String   @unique @db.VarChar(50)
+  report_id       String?  @db.VarChar(50)
+  
+  user_question   String   @db.VarChar(500)
+  hr_reply        String   @db.VarChar(2000)
+  jd_context      String?  @db.VarChar(2000)
+  
+  visitor_id      String?  @db.VarChar(50)
+  ip_address      String?  @db.VarChar(45)
+  
+  avoidance_score Int
+  risk_level      String   @db.VarChar(10)
+  analysis        String   @db.VarChar(500)
+  next_questions  Json
+  
+  analysis_status String   @default("pending") @db.VarChar(20)
+  provider        String?  @db.VarChar(50)
+  model           String?  @db.VarChar(50)
+  model_version   String?  @db.VarChar(20)
+  prompt_version  String?  @db.VarChar(20)
+  schema_version  String   @default("v1.0.0") @db.VarChar(20)
+  
+  latency_ms      Int?
+  input_tokens    Int?
+  output_tokens   Int?
+  cost_estimate   Decimal? @db.Decimal(10, 6)
+  
+  retention_until DateTime?
+  is_deleted      Boolean  @default(false)
+  deleted_at      DateTime?
+  
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+  
+  @@index([hr_analysis_id])
+  @@index([report_id])
+  @@index([visitor_id])
+  @@index([created_at])
+  @@map("hr_analyses")
+}
+
+model InterviewFeedback {
+  id              String   @id @default(cuid()) @db.VarChar(50)
+  feedback_id     String   @unique @db.VarChar(50)
+  report_id       String?  @db.VarChar(50)
+  
+  company_name    String   @db.VarChar(80)
+  job_title       String   @db.VarChar(80)
+  source_platform String?  @db.VarChar(30)
+  
+  jd_claim        String   @db.VarChar(500)
+  interview_actual String  @db.VarChar(2000)
+  
+  involves_sales         Boolean
+  involves_fee           Boolean
+  involves_training_loan Boolean
+  involves_deposit       Boolean
+  subject_mismatch       Boolean
+  
+  recommend_to_others String @db.VarChar(10)
+  
+  visitor_id      String?  @db.VarChar(50)
+  ip_address      String?  @db.VarChar(45)
+  
+  review_status   String   @default("pending") @db.VarChar(20)
+  reviewed_at     DateTime?
+  reviewer_note   String?  @db.VarChar(500)
+  
+  retention_until DateTime?
+  is_deleted      Boolean  @default(false)
+  deleted_at      DateTime?
+  
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+  
+  @@index([feedback_id])
+  @@index([report_id])
+  @@index([company_name])
+  @@index([created_at])
+  @@map("interview_feedbacks")
+}
+
+model ReportFeedback {
+  id            String   @id @default(cuid()) @db.VarChar(50)
+  feedback_id   String   @unique @db.VarChar(50)
+  report_id     String   @db.VarChar(50)
+  
+  feedback_type String   @db.VarChar(30)
+  content       String   @db.VarChar(2000)
+  
+  visitor_id    String?  @db.VarChar(50)
+  ip_address    String?  @db.VarChar(45)
+  
+  review_status String   @default("pending") @db.VarChar(20)
+  reviewed_at   DateTime?
+  reviewer_note String?  @db.VarChar(500)
+  
+  retention_until DateTime?
+  is_deleted    Boolean  @default(false)
+  deleted_at    DateTime?
+  
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+  
+  @@index([feedback_id])
+  @@index([report_id])
+  @@index([created_at])
+  @@map("report_feedbacks")
+}
+
+model ApiLog {
+  id              String   @id @default(cuid()) @db.VarChar(50)
+  
+  request_id      String   @unique @db.VarChar(50)
+  api_path        String   @db.VarChar(100)
+  method          String   @db.VarChar(10)
+  
+  visitor_id      String?  @db.VarChar(50)
+  ip_address      String?  @db.VarChar(45)
+  user_agent      String?  @db.VarChar(200)
+  
+  http_status     Int
+  error_code      String?  @db.VarChar(30)
+  error_message   String?  @db.VarChar(500)
+  
+  ai_called       Boolean  @default(false)
+  provider        String?  @db.VarChar(50)
+  model           String?  @db.VarChar(50)
+  input_tokens    Int?
+  output_tokens   Int?
+  latency_ms      Int?
+  cost_estimate   Decimal? @db.Decimal(10, 6)
+  
+  rate_limited    Boolean  @default(false)
+  captcha_required Boolean @default(false)
+  captcha_passed   Boolean @default(false)
+  
+  request_at      DateTime @default(now())
+  response_at     DateTime?
+  
+  created_at      DateTime @default(now())
+  
+  @@index([request_id])
+  @@index([api_path])
+  @@index([visitor_id])
+  @@index([ip_address])
+  @@index([request_at])
+  @@index([http_status])
+  @@map("api_logs")
+}
+
+model SecurityEvent {
+  id            String   @id @default(cuid()) @db.VarChar(50)
+  
+  event_type    String   @db.VarChar(30)
+  severity      String   @db.VarChar(10)
+  
+  visitor_id    String?  @db.VarChar(50)
+  ip_address    String?  @db.VarChar(45)
+  user_agent    String?  @db.VarChar(200)
+  
+  api_path      String?  @db.VarChar(100)
+  request_id    String?  @db.VarChar(50)
+  
+  detail        Json?
+  
+  action_taken  String?  @db.VarChar(50)
+  
+  created_at    DateTime @default(now())
+  
+  @@index([event_type])
+  @@index([visitor_id])
+  @@index([ip_address])
+  @@index([created_at])
+  @@map("security_events")
+}
