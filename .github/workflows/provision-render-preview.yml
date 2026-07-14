@@ -1,0 +1,98 @@
+name: Provision Render Preview
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+      RENDER_API: https://api.render.com/v1
+      RENDER_REGION: oregon
+      RENDER_DATABASE_NAME: joblens-preview-db
+      RENDER_KEY_VALUE_NAME: joblens-preview-cache
+      RENDER_SERVICE_NAME: joblens-preview-api
+      VERCEL_ORIGIN: https://joblens-miniapp.vercel.app
+    steps:
+      - name: Provision Render resources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          request() {
+            curl --fail --silent --show-error --retry 3 --retry-all-errors \
+              -H 'Accept: application/json' \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+
+          owner_json="$(request "$RENDER_API/owners?limit=1")"
+          owner_id="$(jq -r '.[0].owner.id // .[0].id // empty' <<<"$owner_json")"
+          test -n "$owner_id"
+
+          existing_id() {
+            local endpoint="$1"
+            local name="$2"
+            local resource="$3"
+            request "$RENDER_API/$endpoint?name=$name&ownerId=$owner_id&limit=1" |
+              jq -r ".[0].$resource.id // .[0].id // empty"
+          }
+
+          database_id="$(existing_id postgres "$RENDER_DATABASE_NAME" postgres)"
+          if [ -z "$database_id" ]; then
+            database_id="$(request -X POST -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg name "$RENDER_DATABASE_NAME" --arg ownerId "$owner_id" --arg region "$RENDER_REGION" '{name:$name,ownerId:$ownerId,plan:"free",region:$region,version:"16"}')" \
+              "$RENDER_API/postgres" | jq -r '.id')"
+          fi
+
+          key_value_id="$(existing_id key-value "$RENDER_KEY_VALUE_NAME" keyValue)"
+          if [ -z "$key_value_id" ]; then
+            key_value_id="$(request -X POST -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg name "$RENDER_KEY_VALUE_NAME" --arg ownerId "$owner_id" --arg region "$RENDER_REGION" '{name:$name,ownerId:$ownerId,plan:"free",region:$region,persistenceMode:"off"}')" \
+              "$RENDER_API/key-value" | jq -r '.id')"
+          fi
+
+          for _ in {1..80}; do
+            database_url="$(request "$RENDER_API/postgres/$database_id/connection-info" | jq -r '.internalConnectionString // empty')"
+            redis_url="$(request "$RENDER_API/key-value/$key_value_id/connection-info" | jq -r '.internalConnectionString // empty')"
+            if [ -n "$database_url" ] && [ -n "$redis_url" ]; then
+              break
+            fi
+            sleep 15
+          done
+          test -n "${database_url:-}"
+          test -n "${redis_url:-}"
+
+          service_id="$(existing_id services "$RENDER_SERVICE_NAME" service)"
+          if [ -z "$service_id" ]; then
+            payload="$(jq -nc \
+              --arg ownerId "$owner_id" \
+              --arg databaseUrl "$database_url" \
+              --arg redisUrl "$redis_url" \
+              --arg siliconflowApiKey "$SILICONFLOW_API_KEY" \
+              --arg corsOrigin "$VERCEL_ORIGIN" \
+              '{type:"web_service",name:"joblens-preview-api",ownerId:$ownerId,repo:"https://github.com/KeithYww/joblens-miniapp-project",branch:"main",autoDeploy:"yes",rootDir:"backend",envVars:[{key:"NODE_ENV",value:"production"},{key:"DATABASE_URL",value:$databaseUrl},{key:"REDIS_URL",value:$redisUrl},{key:"REQUIRE_DATABASE",value:"true"},{key:"REQUIRE_REDIS",value:"true"},{key:"TRUST_PROXY",value:"1"},{key:"CORS_ORIGIN",value:$corsOrigin},{key:"AI_PROVIDER",value:"siliconflow"},{key:"SILICONFLOW_API_KEY",value:$siliconflowApiKey},{key:"SILICONFLOW_MODEL",value:"Qwen/Qwen2.5-72B-Instruct"}],serviceDetails:{runtime:"node",plan:"free",region:"oregon",healthCheckPath:"/api/health",envSpecificDetails:{buildCommand:"npm ci && npx prisma generate && npm run build",startCommand:"npm run prisma:deploy && npm start"}}}')"
+            service_id="$(request -X POST -H 'Content-Type: application/json' --data "$payload" "$RENDER_API/services" | jq -r '.id')"
+          fi
+
+          for _ in {1..100}; do
+            service_json="$(request "$RENDER_API/services/$service_id")"
+            service_url="$(jq -r '.service.url // .url // empty' <<<"$service_json")"
+            service_state="$(jq -r '.service.suspended // .suspended // empty' <<<"$service_json")"
+            if [ -n "$service_url" ] && [ "$service_state" = "not_suspended" ]; then
+              health="$(curl --silent --show-error --max-time 20 --write-out '%{http_code}' --output /tmp/health "$service_url/api/health" || true)"
+              if [ "$health" = "200" ]; then
+                echo "Render API ready: $service_url"
+                exit 0
+              fi
+            fi
+            sleep 15
+          done
+
+          echo 'Render service did not become healthy before the workflow timeout.' >&2
+          exit 1
