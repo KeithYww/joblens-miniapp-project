@@ -28,7 +28,7 @@ import {
   verifyCaptcha,
 } from '../services/rateLimit';
 import { startDataRetentionScheduler } from '../services/dataRetention';
-import { extractJobFromScreenshots } from '../services/screenshotExtraction';
+import { extractJobFromScreenshots, ScreenshotExtractionTimeoutError } from '../services/screenshotExtraction';
 
 const llmProvider = createLlmProviderWithFallback();
 const MINUTE_MS = 60 * 1000;
@@ -578,9 +578,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: true, provider: extraction.provider, model: extraction.model, latencyMs: extraction.latencyMs });
       return reply.send(extraction.result);
     } catch (error) {
-      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 502, errorCode: 'OCR_UNAVAILABLE', errorMessage: '截图识别服务暂时不可用' });
+      const timedOut = error instanceof ScreenshotExtractionTimeoutError;
+      const httpStatus = timedOut ? 504 : 502;
+      const errorCode = timedOut ? 'OCR_TIMEOUT' : 'OCR_UNAVAILABLE';
+      const errorMessage = timedOut ? '截图识别超时' : '截图识别服务暂时不可用';
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus, errorCode, errorMessage });
       logInternalFailure(request, 'screenshot_extraction', error);
-      return reply.status(502).send(buildErrorResponse('OCR_UNAVAILABLE', '截图识别服务暂时不可用，请稍后重试或手动填写。'));
+      return reply.status(httpStatus).send(buildErrorResponse(errorCode, timedOut
+        ? '截图识别超时，请重试或手动填写。'
+        : '截图识别服务暂时不可用，请稍后重试或手动填写。'));
     }
   });
 

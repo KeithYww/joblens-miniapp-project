@@ -4,7 +4,8 @@ import { requireApiKey, safeProviderError } from './llm/common';
 import type { ScreenshotExtractResult } from '../types';
 
 const ENDPOINT = 'https://api.siliconflow.cn/v1/chat/completions';
-const TIMEOUT_MS = 90_000;
+const configuredTimeoutMs = Number.parseInt(process.env.SILICONFLOW_VISION_TIMEOUT_MS || '60000', 10);
+const TIMEOUT_MS = Math.min(Math.max(Number.isFinite(configuredTimeoutMs) ? configuredTimeoutMs : 60_000, 10_000), 90_000);
 const outputSchema = z.object({
   jd_text: z.string().trim().min(1).max(8_000),
   company_name: z.string().trim().max(80).optional(),
@@ -14,6 +15,13 @@ const outputSchema = z.object({
 }).strict();
 
 type VisionContent = { type: 'image_url'; image_url: { url: string; detail: 'high' } } | { type: 'text'; text: string };
+
+export class ScreenshotExtractionTimeoutError extends Error {
+  constructor() {
+    super('Vision model request timed out');
+    this.name = 'ScreenshotExtractionTimeoutError';
+  }
+}
 
 export async function extractJobFromScreenshots(images: string[], language?: 'zh-CN' | 'en-US'): Promise<{
   result: ScreenshotExtractResult;
@@ -45,6 +53,9 @@ export async function extractJobFromScreenshots(images: string[], language?: 'zh
     return { result: parsed.data, model, provider: 'siliconflow', latencyMs: Date.now() - startedAt, usage: response.data.usage };
   } catch (error) {
     console.error('Screenshot extraction failed', safeProviderError(error));
+    if (axios.isAxiosError(error) && (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT')) {
+      throw new ScreenshotExtractionTimeoutError();
+    }
     throw error;
   }
 }

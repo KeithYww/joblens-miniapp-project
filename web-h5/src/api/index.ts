@@ -38,16 +38,38 @@ function getVisitorId(): string {
 
 async function fetchApi<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs?: number,
 ): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set('Content-Type', 'application/json');
   headers.set('X-Visitor-Id', getVisitorId());
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers,
-  });
+  const controller = timeoutMs ? new AbortController() : undefined;
+  let timedOut = false;
+  const timeoutId = timeoutMs ? window.setTimeout(() => {
+    timedOut = true;
+    controller?.abort();
+  }, timeoutMs) : undefined;
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers,
+      signal: controller?.signal ?? options.signal,
+    });
+  } catch (error) {
+    if (timedOut) {
+      throw new ApiRequestError({
+        error: 'CLIENT_TIMEOUT',
+        message: '请求超时，请重试或手动填写。',
+      });
+    }
+    throw error;
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
 
   let data: T | ApiError;
   try {
@@ -72,7 +94,7 @@ export const api = {
       return fetchApi('/api/ocr/extract-job', {
         method: 'POST',
         body: JSON.stringify(data),
-      });
+      }, 65_000);
     },
   },
   reports: {

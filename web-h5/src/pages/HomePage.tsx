@@ -100,6 +100,10 @@ export function HomePage() {
         setCaptchaToken('');
         setCaptchaResetSignal(value => value + 1);
         setError(isEnglish ? 'Verification expired. Complete it again.' : '验证已失效，请重新完成验证。');
+      } else if (err instanceof ApiRequestError && (err.code === 'OCR_TIMEOUT' || err.code === 'CLIENT_TIMEOUT')) {
+        setError(isEnglish
+          ? 'Screenshot extraction timed out. Try again or enter the job details manually.'
+          : '截图识别超时，请重试或手动填写岗位信息。');
       } else {
         setError(err instanceof Error ? err.message : (isEnglish ? 'Screenshot extraction failed. Please try again later.' : '截图识别失败，请稍后重试。'));
       }
