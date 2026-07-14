@@ -276,11 +276,24 @@ export function HomePage() {
           )}
 
           {captchaRequired && (
-            <TurnstileChallenge
-              onVerify={setCaptchaToken}
-              onError={() => setError('验证加载失败，请刷新页面后重试。')}
-              resetSignal={captchaResetSignal}
-            />
+            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/45 p-4" role="dialog" aria-modal="true" aria-labelledby="captcha-dialog-title">
+              <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <h2 id="captcha-dialog-title" className="text-base font-semibold text-gray-900">完成安全验证</h2>
+                    <p className="mt-1 text-sm text-gray-600">验证后可继续提交本次检测。</p>
+                  </div>
+                  <button type="button" onClick={() => setCaptchaRequired(false)} aria-label="关闭验证窗口" className="rounded-md p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+                <TurnstileChallenge
+                  onVerify={setCaptchaToken}
+                  onError={() => setError('验证加载失败，请刷新页面后重试。')}
+                  resetSignal={captchaResetSignal}
+                />
+              </div>
+            </div>
           )}
 
           <button

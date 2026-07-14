@@ -28,6 +28,7 @@ export function TurnstileChallenge({
   const onVerifyRef = useRef(onVerify);
   const onErrorRef = useRef(onError);
   const [scriptReady, setScriptReady] = useState(Boolean(window.turnstile));
+  const [loadFailed, setLoadFailed] = useState(false);
   const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY;
 
   useEffect(() => {
@@ -41,6 +42,18 @@ export function TurnstileChallenge({
       return;
     }
 
+    const handleLoad = () => {
+      if (window.turnstile) setScriptReady(true);
+      else {
+        setLoadFailed(true);
+        onErrorRef.current?.();
+      }
+    };
+    const handleError = () => {
+      setLoadFailed(true);
+      onErrorRef.current?.();
+    };
+
     let script = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
     if (!script) {
       script = document.createElement('script');
@@ -48,14 +61,17 @@ export function TurnstileChallenge({
       script.src = SCRIPT_URL;
       script.async = true;
       script.defer = true;
-      document.head.appendChild(script);
     }
-
-    const handleLoad = () => setScriptReady(true);
-    const handleError = () => onErrorRef.current?.();
     script.addEventListener('load', handleLoad);
     script.addEventListener('error', handleError);
+    if (!script.isConnected) document.head.appendChild(script);
+    const timeout = window.setTimeout(() => {
+      if (!window.turnstile) handleError();
+    }, 10_000);
+
+    if (window.turnstile) handleLoad();
     return () => {
+      window.clearTimeout(timeout);
       script?.removeEventListener('load', handleLoad);
       script?.removeEventListener('error', handleError);
     };
@@ -94,6 +110,18 @@ export function TurnstileChallenge({
         验证服务暂不可用，请稍后重试。
       </p>
     );
+  }
+
+  if (loadFailed) {
+    return (
+      <p className="text-sm text-danger-600 bg-danger-50 rounded-lg p-3">
+        验证组件加载失败，请刷新页面后重试。
+      </p>
+    );
+  }
+
+  if (!scriptReady) {
+    return <div className="min-h-[65px] flex items-center justify-center text-sm text-gray-500">正在加载安全验证...</div>;
   }
 
   return <div ref={containerRef} className="min-h-[65px] flex justify-center" />;
