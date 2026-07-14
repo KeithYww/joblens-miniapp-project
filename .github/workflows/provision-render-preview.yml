@@ -24,6 +24,19 @@ jobs:
         run: |
           set -euo pipefail
 
+          render_status() {
+            curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+              -H 'Accept: application/json' \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$RENDER_API/$1"
+          }
+
+          owners_status="$(render_status 'owners?limit=1')"
+          users_status="$(render_status users)"
+          services_status="$(render_status 'services?limit=1')"
+          echo "Render API endpoint status - owners: $owners_status, users: $users_status, services: $services_status"
+          test "$owners_status" = '200'
+
           request() {
             curl --fail --silent --show-error --retry 3 --retry-all-errors \
               -H 'Accept: application/json' \
