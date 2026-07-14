@@ -75,7 +75,7 @@ jobs:
             request "$RENDER_API/services/$service_id/deploys?limit=3" |
               jq 'map(.deploy // .) | map({id, status, trigger, createdAt, startedAt, finishedAt, commit})'
             request "$RENDER_API/logs?ownerId=$owner_id&resource=$service_id&type=build&limit=100" |
-              jq '.[].message // .[].text // .'
+              jq '(.logs // .)[]? | .message // .text // .'
             exit 0
           fi
 
