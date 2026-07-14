@@ -23,6 +23,8 @@ export function HomePage() {
   const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
   const [captchaAction, setCaptchaAction] = useState<'ocr' | 'analysis'>('analysis');
   const [screenshots, setScreenshots] = useState<Array<{ name: string; dataUrl: string }>>([]);
+  const [screenshotsRevision, setScreenshotsRevision] = useState(0);
+  const [lastExtractedRevision, setLastExtractedRevision] = useState(-1);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractStatus, setExtractStatus] = useState('');
   const [extractProgress, setExtractProgress] = useState(0);
@@ -57,6 +59,7 @@ export function HomePage() {
       reader.readAsDataURL(file);
     })));
     setScreenshots(current => [...current, ...encoded]);
+    setScreenshotsRevision(current => current + 1);
     setExtractStatus('');
     setError('');
   }, [screenshots.length, isEnglish]);
@@ -80,6 +83,7 @@ export function HomePage() {
       if (!jobTitle && result.job_title) setJobTitle(result.job_title);
       if (!sourcePlatform && result.source_platform) setSourcePlatform(result.source_platform);
       if (!hrChatText && result.hr_chat_text) setHrChatText(result.hr_chat_text);
+      setLastExtractedRevision(screenshotsRevision);
       setExtractStatus(isEnglish ? 'Text extracted. Review and edit the fields below before analyzing.' : '已提取岗位信息，请在下方确认和编辑后再开始检测。');
     } catch (err) {
       setExtractProgress(0);
@@ -99,7 +103,7 @@ export function HomePage() {
     } finally {
       setIsExtracting(false);
     }
-  }, [screenshots, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish, captchaToken]);
+  }, [screenshots, screenshotsRevision, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish, captchaToken]);
 
   const extractProgressLabel = extractProgress < 45
     ? (isEnglish ? 'Preparing screenshots...' : '正在准备截图...')
@@ -211,13 +215,30 @@ export function HomePage() {
                   <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-primary-200 bg-white px-3 py-2 text-sm font-medium text-primary-700 hover:bg-primary-50">
                     <ImageUp className="w-4 h-4" />
                     {isEnglish ? 'Choose screenshots' : '选择截图'}
-                    <input className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={event => void handleScreenshotSelection(event.target.files)} />
+                    <input
+                      className="sr-only"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      multiple
+                      onChange={event => {
+                        void handleScreenshotSelection(event.currentTarget.files);
+                        event.currentTarget.value = '';
+                      }}
+                    />
                   </label>
-                  {screenshots.length > 0 && <button type="button" onClick={() => void handleExtractScreenshots()} disabled={isExtracting} className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
-                    {isExtracting ? (isEnglish ? 'Extracting...' : '识别中...') : (isEnglish ? 'Extract text' : '识别截图')}
+                  {screenshots.length > 0 && <button type="button" onClick={() => void handleExtractScreenshots()} disabled={isExtracting || screenshotsRevision === lastExtractedRevision} className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">
+                    {isExtracting
+                      ? (isEnglish ? 'Extracting...' : '识别中...')
+                      : screenshotsRevision === lastExtractedRevision
+                        ? (isEnglish ? 'Extracted' : '已识别')
+                        : (isEnglish ? 'Extract text' : '识别截图')}
                   </button>}
                 </div>
-                {screenshots.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{screenshots.map((item, index) => <div key={`${item.name}-${index}`} className="flex max-w-full items-center gap-1 rounded-md bg-white px-2 py-1 text-xs text-gray-700 border border-gray-200"><span className="max-w-40 truncate">{item.name}</span><button type="button" aria-label={isEnglish ? `Remove ${item.name}` : `移除 ${item.name}`} onClick={() => setScreenshots(current => current.filter((_, itemIndex) => itemIndex !== index))} className="text-gray-500 hover:text-danger-600"><X className="w-3.5 h-3.5" /></button></div>)}</div>}
+                {screenshots.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{screenshots.map((item, index) => <div key={`${item.name}-${index}`} className="flex max-w-full items-center gap-1 rounded-md bg-white px-2 py-1 text-xs text-gray-700 border border-gray-200"><span className="max-w-40 truncate">{item.name}</span><button type="button" aria-label={isEnglish ? `Remove ${item.name}` : `移除 ${item.name}`} onClick={() => {
+                  setScreenshots(current => current.filter((_, itemIndex) => itemIndex !== index));
+                  setScreenshotsRevision(current => current + 1);
+                  setExtractStatus('');
+                }} className="text-gray-500 hover:text-danger-600"><X className="w-3.5 h-3.5" /></button></div>)}</div>}
                 {isExtracting && <div className="mt-4" aria-live="polite">
                   <div className="mb-1.5 flex items-center justify-between text-xs text-primary-700">
                     <span>{extractProgressLabel}</span>
@@ -322,7 +343,7 @@ export function HomePage() {
                 </div>
                 <TurnstileChallenge
                   onVerify={handleCaptchaVerify}
-                  onError={() => setError('验证加载失败，请刷新页面后重试。')}
+                  onError={code => setError(`验证加载失败${code ? `（${code}）` : ''}，请刷新页面后重试。`)}
                   resetSignal={captchaResetSignal}
                 />
               </div>

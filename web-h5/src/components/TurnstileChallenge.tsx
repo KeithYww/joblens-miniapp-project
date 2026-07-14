@@ -19,7 +19,7 @@ export function TurnstileChallenge({
   resetSignal = 0,
 }: {
   onVerify: (token: string) => void;
-  onError?: () => void;
+  onError?: (code?: string) => void;
   resetSignal?: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -49,10 +49,11 @@ export function TurnstileChallenge({
         onErrorRef.current?.();
       }
     };
-    const handleError = () => {
+    const handleError = (code = 'script-load-failed') => {
       setLoadFailed(true);
-      onErrorRef.current?.();
+      onErrorRef.current?.(code);
     };
+    const handleScriptError = () => handleError('script-load-failed');
 
     let script = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
     if (!script) {
@@ -63,30 +64,37 @@ export function TurnstileChallenge({
       script.defer = true;
     }
     script.addEventListener('load', handleLoad);
-    script.addEventListener('error', handleError);
+    script.addEventListener('error', handleScriptError);
     if (!script.isConnected) document.head.appendChild(script);
     const timeout = window.setTimeout(() => {
-      if (!window.turnstile) handleError();
+      if (!window.turnstile) handleError('script-timeout');
     }, 10_000);
 
     if (window.turnstile) handleLoad();
     return () => {
       window.clearTimeout(timeout);
       script?.removeEventListener('load', handleLoad);
-      script?.removeEventListener('error', handleError);
+      script?.removeEventListener('error', handleScriptError);
     };
   }, []);
 
   useEffect(() => {
     if (!scriptReady || !siteKey || !containerRef.current || !window.turnstile) return;
 
-    widgetIdRef.current = window.turnstile.render(containerRef.current, {
-      sitekey: siteKey,
-      callback: (token: string) => onVerifyRef.current(token),
-      'expired-callback': () => onVerifyRef.current(''),
-      'error-callback': () => onErrorRef.current?.(),
-      theme: 'auto',
-    });
+    try {
+      widgetIdRef.current = window.turnstile.render(containerRef.current, {
+        sitekey: siteKey,
+        callback: (token: string) => onVerifyRef.current(token),
+        'expired-callback': () => onVerifyRef.current(''),
+        'error-callback': (code: string) => onErrorRef.current?.(code || 'widget-error'),
+        'refresh-expired': 'auto',
+        retry: 'auto',
+        theme: 'auto',
+      });
+    } catch {
+      setLoadFailed(true);
+      onErrorRef.current?.('render-failed');
+    }
 
     return () => {
       if (widgetIdRef.current && window.turnstile) {

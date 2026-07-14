@@ -36,6 +36,7 @@ interface RateLimitEntry {
 const memoryCache = new Map<string, RateLimitEntry>();
 const MAX_MEMORY_ENTRIES = 10_000;
 const MAX_CAPTCHA_TOKEN_LENGTH = 2_048;
+const RATE_LIMIT_NAMESPACE = 'ratelimit:v2';
 
 function stableKeyPart(value: unknown, fallback: string): string {
   const normalized = typeof value === 'string' ? value.trim().slice(0, 4_096) : '';
@@ -66,7 +67,7 @@ function rateLimitKeys(ip: string, visitorId: string, apiPath: string) {
 }
 
 function inputHashKey(inputHash: string): string {
-  return `ratelimit:input_hash:${stableKeyPart(inputHash, 'missing-input-hash')}`;
+  return `${RATE_LIMIT_NAMESPACE}:input_hash:${stableKeyPart(inputHash, 'missing-input-hash')}`;
 }
 
 function pruneMemoryCache(): void {
@@ -182,13 +183,13 @@ export async function checkRateLimit(
   inputHash?: string
 ): Promise<RateLimitResult> {
   const { ipPart, visitorPart, pathPart } = rateLimitKeys(ip, visitorId, apiPath);
-  const ipKey = `ratelimit:ip:${ipPart}:${pathPart}`;
-  const ipHighKey = `ratelimit:ip_high:${ipPart}:${pathPart}`;
-  const visitorKey = `ratelimit:visitor:${visitorPart}:${pathPart}`;
-  const visitorHighKey = `ratelimit:visitor_high:${visitorPart}:${pathPart}`;
-  const exemptKey = `captcha_exempt:${visitorPart}`;
-  const ipBlockKey = `blocked:ip:${ipPart}`;
-  const visitorBlockKey = `blocked:visitor:${visitorPart}`;
+  const ipKey = `${RATE_LIMIT_NAMESPACE}:ip:${ipPart}:${pathPart}`;
+  const ipHighKey = `${RATE_LIMIT_NAMESPACE}:ip_high:${ipPart}:${pathPart}`;
+  const visitorKey = `${RATE_LIMIT_NAMESPACE}:visitor:${visitorPart}:${pathPart}`;
+  const visitorHighKey = `${RATE_LIMIT_NAMESPACE}:visitor_high:${visitorPart}:${pathPart}`;
+  const exemptKey = `${RATE_LIMIT_NAMESPACE}:captcha_exempt:${visitorPart}`;
+  const ipBlockKey = `${RATE_LIMIT_NAMESPACE}:blocked:ip:${ipPart}`;
+  const visitorBlockKey = `${RATE_LIMIT_NAMESPACE}:blocked:visitor:${visitorPart}`;
 
   const [ipBlocked, visitorBlocked, exemptUntil] = await Promise.all([
     kvGet(ipBlockKey),
@@ -281,10 +282,10 @@ export async function checkRateLimit(
 
 export async function incrementRateLimit(ip: string, visitorId: string, apiPath: string, inputHash?: string): Promise<void> {
   const { ipPart, visitorPart, pathPart } = rateLimitKeys(ip, visitorId, apiPath);
-  const ipKey = `ratelimit:ip:${ipPart}:${pathPart}`;
-  const ipHighKey = `ratelimit:ip_high:${ipPart}:${pathPart}`;
-  const visitorKey = `ratelimit:visitor:${visitorPart}:${pathPart}`;
-  const visitorHighKey = `ratelimit:visitor_high:${visitorPart}:${pathPart}`;
+  const ipKey = `${RATE_LIMIT_NAMESPACE}:ip:${ipPart}:${pathPart}`;
+  const ipHighKey = `${RATE_LIMIT_NAMESPACE}:ip_high:${ipPart}:${pathPart}`;
+  const visitorKey = `${RATE_LIMIT_NAMESPACE}:visitor:${visitorPart}:${pathPart}`;
+  const visitorHighKey = `${RATE_LIMIT_NAMESPACE}:visitor_high:${visitorPart}:${pathPart}`;
 
   await Promise.all([
     kvIncr(ipKey, RATE_LIMIT_CONFIG.ip.window),
@@ -301,7 +302,7 @@ export async function incrementRateLimit(ip: string, visitorId: string, apiPath:
 
 export async function setCaptchaExempt(visitorId: string): Promise<void> {
   if (typeof visitorId !== 'string' || visitorId.trim().length === 0) return;
-  const exemptKey = `captcha_exempt:${stableKeyPart(visitorId, 'missing-visitor')}`;
+  const exemptKey = `${RATE_LIMIT_NAMESPACE}:captcha_exempt:${stableKeyPart(visitorId, 'missing-visitor')}`;
   const exemptUntil = Date.now() + RATE_LIMIT_CONFIG.captchaExempt.duration * 1000;
   await kvSet(exemptKey, exemptUntil.toString(), RATE_LIMIT_CONFIG.captchaExempt.duration);
 }
