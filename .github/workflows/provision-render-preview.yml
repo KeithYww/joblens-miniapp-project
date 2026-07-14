@@ -70,7 +70,7 @@ jobs:
           if [ "$DIAGNOSTIC" = 'true' ]; then
             echo 'Render resource diagnostic:'
             request "$RENDER_API/postgres?name=$RENDER_DATABASE_NAME&ownerId=$owner_id&limit=1" |
-              jq 'map(.postgres // .) | map({id, name, status, plan, region, expiresAt})'
+              jq 'map(.postgres // .) | map({id, name, status, plan, region, expiresAt, ipAllowList})'
             request "$RENDER_API/key-value?name=$RENDER_KEY_VALUE_NAME&ownerId=$owner_id&limit=1" |
               jq 'map(.keyValue // .) | map({id, name, status, plan, region})'
             request "$RENDER_API/services?name=$RENDER_SERVICE_NAME&ownerId=$owner_id&limit=1" |
