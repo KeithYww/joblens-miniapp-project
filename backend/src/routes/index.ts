@@ -558,6 +558,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
     try {
       const extraction = await extractJobFromScreenshots(parsed.data.images, parsed.data.language);
+      reply.headers({
+        'x-joblens-analysis-source': 'model',
+        'x-joblens-ai-provider': extraction.provider,
+        'x-joblens-ai-model': extraction.model,
+        'x-joblens-ai-latency-ms': String(extraction.latencyMs),
+      });
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: true, provider: extraction.provider, model: extraction.model, latencyMs: extraction.latencyMs });
       return reply.send(extraction.result);
     } catch (error) {
