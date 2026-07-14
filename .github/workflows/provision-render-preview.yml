@@ -115,8 +115,13 @@ jobs:
               --arg redisUrl "$redis_url" \
               --arg siliconflowApiKey "$SILICONFLOW_API_KEY" \
               --arg corsOrigin "$VERCEL_ORIGIN" \
-              '{type:"web_service",name:"joblens-preview-api",ownerId:$ownerId,repo:"https://github.com/KeithYww/joblens-miniapp-project",branch:"main",autoDeploy:"yes",rootDir:"backend",envVars:[{key:"NODE_ENV",value:"production"},{key:"DATABASE_URL",value:$databaseUrl},{key:"REDIS_URL",value:$redisUrl},{key:"REQUIRE_DATABASE",value:"true"},{key:"REQUIRE_REDIS",value:"true"},{key:"TRUST_PROXY",value:"1"},{key:"CORS_ORIGIN",value:$corsOrigin},{key:"AI_PROVIDER",value:"siliconflow"},{key:"SILICONFLOW_API_KEY",value:$siliconflowApiKey},{key:"SILICONFLOW_MODEL",value:"Qwen/Qwen2.5-72B-Instruct"}],serviceDetails:{runtime:"node",plan:"free",region:"oregon",healthCheckPath:"/api/health",envSpecificDetails:{buildCommand:"npm ci && npx prisma generate && npm run build",startCommand:"npm run prisma:deploy && npm start"}}}')"
+              '{type:"web_service",name:"joblens-preview-api",ownerId:$ownerId,repo:"https://github.com/KeithYww/joblens-miniapp-project",branch:"main",autoDeploy:"yes",rootDir:"backend",envVars:[{key:"NODE_ENV",value:"production"},{key:"DATABASE_URL",value:$databaseUrl},{key:"REDIS_URL",value:$redisUrl},{key:"REQUIRE_DATABASE",value:"true"},{key:"REQUIRE_REDIS",value:"true"},{key:"TRUST_PROXY",value:"1"},{key:"CORS_ORIGIN",value:$corsOrigin},{key:"AI_PROVIDER",value:"siliconflow"},{key:"SILICONFLOW_API_KEY",value:$siliconflowApiKey},{key:"SILICONFLOW_MODEL",value:"Qwen/Qwen2.5-72B-Instruct"}],serviceDetails:{runtime:"node",plan:"free",region:"oregon",healthCheckPath:"/api/health",envSpecificDetails:{buildCommand:"npm ci --include=dev && npx prisma generate && npm run build",startCommand:"npm run prisma:deploy && npm start"}}}')"
             service_id="$(request -X POST -H 'Content-Type: application/json' --data "$payload" "$RENDER_API/services" | jq -r '.id')"
+          else
+            request -X PATCH -H 'Content-Type: application/json' \
+              --data '{"serviceDetails":{"envSpecificDetails":{"buildCommand":"npm ci --include=dev && npx prisma generate && npm run build","startCommand":"npm run prisma:deploy && npm start"}}}' \
+              "$RENDER_API/services/$service_id" >/dev/null
+            request -X POST -H 'Content-Type: application/json' --data '{"clearCache":"clear"}' "$RENDER_API/services/$service_id/deploys" >/dev/null
           fi
 
           for _ in {1..100}; do
