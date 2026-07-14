@@ -25,7 +25,7 @@ jobs:
           set -euo pipefail
 
           render_status() {
-            curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            curl --connect-timeout 10 --max-time 30 --silent --show-error --output /dev/null --write-out '%{http_code}' \
               -H 'Accept: application/json' \
               -H "Authorization: Bearer $RENDER_API_KEY" \
               "$RENDER_API/$1"
@@ -38,7 +38,7 @@ jobs:
           test "$owners_status" = '200'
 
           request() {
-            curl --fail --silent --show-error --retry 3 --retry-all-errors \
+            curl --connect-timeout 10 --max-time 30 --fail --silent --show-error --retry 3 --retry-all-errors \
               -H 'Accept: application/json' \
               -H "Authorization: Bearer $RENDER_API_KEY" \
               "$@"
@@ -58,6 +58,7 @@ jobs:
 
           database_id="$(existing_id postgres "$RENDER_DATABASE_NAME" postgres)"
           if [ -z "$database_id" ]; then
+            echo 'Creating free PostgreSQL instance'
             database_id="$(request -X POST -H 'Content-Type: application/json' \
               --data "$(jq -nc --arg name "$RENDER_DATABASE_NAME" --arg ownerId "$owner_id" --arg region "$RENDER_REGION" '{name:$name,ownerId:$ownerId,plan:"free",region:$region,version:"16"}')" \
               "$RENDER_API/postgres" | jq -r '.id')"
@@ -65,6 +66,7 @@ jobs:
 
           key_value_id="$(existing_id key-value "$RENDER_KEY_VALUE_NAME" keyValue)"
           if [ -z "$key_value_id" ]; then
+            echo 'Creating free Key Value instance'
             key_value_id="$(request -X POST -H 'Content-Type: application/json' \
               --data "$(jq -nc --arg name "$RENDER_KEY_VALUE_NAME" --arg ownerId "$owner_id" --arg region "$RENDER_REGION" '{name:$name,ownerId:$ownerId,plan:"free",region:$region,persistenceMode:"off"}')" \
               "$RENDER_API/key-value" | jq -r '.id')"
@@ -83,6 +85,7 @@ jobs:
 
           service_id="$(existing_id services "$RENDER_SERVICE_NAME" service)"
           if [ -z "$service_id" ]; then
+            echo 'Creating free web service'
             payload="$(jq -nc \
               --arg ownerId "$owner_id" \
               --arg databaseUrl "$database_url" \
