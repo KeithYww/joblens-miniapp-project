@@ -47,20 +47,46 @@ test('captcha verification sends a normalized remote IP without exposing the sec
 });
 
 test('write limits require a captcha after the configured short-window threshold', async () => {
+  const previousMode = process.env.CAPTCHA_MODE;
+  process.env.CAPTCHA_MODE = 'enabled';
   const ip = '203.0.113.9';
   const visitorId = 'visitor_123456abcdef123456abcdef123456ab';
   const path = `/api/test-rate-limit-${Date.now()}`;
 
-  for (let index = 0; index < 5; index += 1) {
-    const before = await checkRateLimit(ip, visitorId, path);
-    assert.equal(before.blocked, false);
-    assert.equal(before.requiresCaptcha, false);
-    await incrementRateLimit(ip, visitorId, path);
-  }
+  try {
+    for (let index = 0; index < 5; index += 1) {
+      const before = await checkRateLimit(ip, visitorId, path);
+      assert.equal(before.blocked, false);
+      assert.equal(before.requiresCaptcha, false);
+      await incrementRateLimit(ip, visitorId, path);
+    }
 
-  const limited = await checkRateLimit(ip, visitorId, path);
-  assert.equal(limited.blocked, false);
-  assert.equal(limited.requiresCaptcha, true);
+    const limited = await checkRateLimit(ip, visitorId, path);
+    assert.equal(limited.blocked, false);
+    assert.equal(limited.requiresCaptcha, true);
+  } finally {
+    restoreEnv('CAPTCHA_MODE', previousMode);
+  }
+});
+
+test('write limits fail with retry guidance when captcha is disabled', async () => {
+  const previousMode = process.env.CAPTCHA_MODE;
+  process.env.CAPTCHA_MODE = 'disabled';
+  const ip = '203.0.113.10';
+  const visitorId = 'visitor_abcdef123456abcdef123456abcdef12';
+  const path = `/api/test-no-captcha-${Date.now()}`;
+
+  try {
+    for (let index = 0; index < 5; index += 1) {
+      await incrementRateLimit(ip, visitorId, path);
+    }
+    const limited = await checkRateLimit(ip, visitorId, path);
+    assert.equal(limited.blocked, true);
+    assert.equal(limited.requiresCaptcha, false);
+    assert.ok((limited.retryAfter || 0) > 0);
+  } finally {
+    restoreEnv('CAPTCHA_MODE', previousMode);
+  }
 });
 
 function restoreEnv(name: string, value: string | undefined): void {

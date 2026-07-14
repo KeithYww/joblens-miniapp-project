@@ -176,6 +176,10 @@ export interface RateLimitResult {
   retryAfter?: number;
 }
 
+function isCaptchaEnabled(): boolean {
+  return process.env.CAPTCHA_MODE !== 'disabled';
+}
+
 export async function checkRateLimit(
   ip: string,
   visitorId: string,
@@ -259,6 +263,15 @@ export async function checkRateLimit(
     const hashKey = inputHashKey(inputHash);
     const hashCount = await kvGet(hashKey);
     if (hashCount && parseInt(hashCount) > RATE_LIMIT_CONFIG.inputHash.threshold) {
+      if (!isCaptchaEnabled()) {
+        return {
+          allowed: false,
+          requiresCaptcha: false,
+          blocked: true,
+          message: '相同内容请勿重复提交，请稍后再试。',
+          retryAfter: await kvTtl(hashKey),
+        };
+      }
       return {
         allowed: false,
         requiresCaptcha: true,
@@ -269,6 +282,16 @@ export async function checkRateLimit(
   }
 
   if (ipNum >= RATE_LIMIT_CONFIG.ip.threshold || visitorNum >= RATE_LIMIT_CONFIG.visitor.threshold) {
+    if (!isCaptchaEnabled()) {
+      const [ipTtl, visitorTtl] = await Promise.all([kvTtl(ipKey), kvTtl(visitorKey)]);
+      return {
+        allowed: false,
+        requiresCaptcha: false,
+        blocked: true,
+        message: '请求较频繁，请稍后再试。',
+        retryAfter: Math.min(ipTtl, visitorTtl),
+      };
+    }
     return {
       allowed: false,
       requiresCaptcha: true,
