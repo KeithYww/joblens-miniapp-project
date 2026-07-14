@@ -71,6 +71,9 @@ jobs:
               jq 'map(.keyValue // .) | map({id, name, status, plan, region})'
             request "$RENDER_API/services?name=$RENDER_SERVICE_NAME&ownerId=$owner_id&limit=1" |
               jq 'map(.service // .) | map({id, name, suspended, url})'
+            service_id="$(existing_id services "$RENDER_SERVICE_NAME" service)"
+            request "$RENDER_API/services/$service_id/deploys?limit=3" |
+              jq 'map(.deploy // .) | map({id, status, trigger, createdAt, startedAt, finishedAt, commit})'
             exit 0
           fi
 
