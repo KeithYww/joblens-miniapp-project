@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ArrowRight, ShieldCheck, FileText, MessageSquare, ImageUp, X, CheckCircle } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { ArrowRight, ShieldCheck, FileText, MessageSquare, ImageUp, X, CheckCircle, ChevronRight } from 'lucide-react';
 import { TextInputPanel } from '@/components';
 import { TurnstileChallenge } from '@/components/TurnstileChallenge';
 import { api, ApiRequestError } from '@/api';
@@ -167,6 +167,7 @@ export function HomePage() {
 
     try {
       const report = await api.reports.detect(data);
+      localStorage.setItem('latest_report_id', report.report_id);
       navigate(`/report/${report.report_id}`);
     } catch (err: unknown) {
       if (err instanceof ApiRequestError && err.code === 'RATE_LIMITED') {
@@ -207,6 +208,19 @@ export function HomePage() {
     ? Math.max(1, Math.ceil((new Date(rateLimitNotice.retryAfter).getTime() - Date.now()) / 60_000))
     : null;
 
+  const scrollToAnalysis = useCallback(() => {
+    document.getElementById('job-analysis-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
+  const openQuestions = useCallback(() => {
+    const reportId = localStorage.getItem('latest_report_id');
+    if (reportId && /^rep_[a-z0-9]{12}$/.test(reportId)) {
+      navigate(`/report/${reportId}`);
+      return;
+    }
+    scrollToAnalysis();
+  }, [navigate, scrollToAnalysis]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-warning-50">
       <header className="bg-white/80 backdrop-blur-sm border-b border-gray-100 sticky top-0 z-50">
@@ -239,7 +253,7 @@ export function HomePage() {
           </p>
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-6">
+        <div id="job-analysis-form" className="scroll-mt-24 bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-6">
           <section className="border border-primary-100 bg-primary-50/40 rounded-xl p-4">
             <div className="flex items-start gap-3">
               <ImageUp className="w-5 h-5 text-primary-600 mt-0.5 shrink-0" />
@@ -442,28 +456,31 @@ export function HomePage() {
           </p>}
         </div>
 
-        <div className="mt-8 grid grid-cols-3 gap-4">
-          <div className="bg-white rounded-xl border border-gray-100 p-4 text-center">
+        <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
+          <button type="button" onClick={scrollToAnalysis} className="group relative bg-white rounded-xl border border-gray-100 p-4 text-center transition-colors hover:border-primary-200 hover:bg-primary-50/40 focus:outline-none focus:ring-2 focus:ring-primary-200">
             <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center mx-auto mb-2">
               <ShieldCheck className="w-5 h-5 text-primary-600" />
             </div>
             <h3 className="text-sm font-semibold text-gray-700">{isEnglish ? 'Risk signals' : '风险识别'}</h3>
             <p className="text-xs text-gray-500 mt-1">{isEnglish ? 'Spot job risks early' : '智能检测岗位风险'}</p>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-100 p-4 text-center">
+            <ChevronRight className="absolute right-2 top-2 h-4 w-4 text-gray-300 transition-colors group-hover:text-primary-500" />
+          </button>
+          <button type="button" onClick={openQuestions} className="group relative bg-white rounded-xl border border-gray-100 p-4 text-center transition-colors hover:border-warning-200 hover:bg-warning-50/40 focus:outline-none focus:ring-2 focus:ring-warning-200">
             <div className="w-10 h-10 rounded-full bg-warning-100 flex items-center justify-center mx-auto mb-2">
               <MessageSquare className="w-5 h-5 text-warning-600" />
             </div>
             <h3 className="text-sm font-semibold text-gray-700">{isEnglish ? 'Questions to ask' : '追问建议'}</h3>
             <p className="text-xs text-gray-500 mt-1">{isEnglish ? 'Generate key follow-ups' : '生成关键追问问题'}</p>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-100 p-4 text-center">
+            <ChevronRight className="absolute right-2 top-2 h-4 w-4 text-gray-300 transition-colors group-hover:text-warning-500" />
+          </button>
+          <Link to="/feedback" className="group relative bg-white rounded-xl border border-gray-100 p-4 text-center transition-colors hover:border-success-200 hover:bg-success-50/40 focus:outline-none focus:ring-2 focus:ring-success-200">
             <div className="w-10 h-10 rounded-full bg-success-100 flex items-center justify-center mx-auto mb-2">
               <FileText className="w-5 h-5 text-success-600" />
             </div>
             <h3 className="text-sm font-semibold text-gray-700">{isEnglish ? 'Interview feedback' : '面试反馈'}</h3>
             <p className="text-xs text-gray-500 mt-1">{isEnglish ? 'Share outcomes anonymously' : '匿名反馈面试结果'}</p>
-          </div>
+            <ChevronRight className="absolute right-2 top-2 h-4 w-4 text-gray-300 transition-colors group-hover:text-success-500" />
+          </Link>
         </div>
       </main>
 

@@ -55,6 +55,7 @@ export function ReportPage() {
     setActionError('');
     try {
       await api.reports.delete(id, deleteCaptchaToken || undefined);
+      if (localStorage.getItem('latest_report_id') === id) localStorage.removeItem('latest_report_id');
       window.location.href = '/';
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
