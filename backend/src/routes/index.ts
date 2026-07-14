@@ -34,6 +34,8 @@ const llmProvider = createLlmProviderWithFallback();
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REPORT_CACHE_TTL_MS = 10 * MINUTE_MS;
+// Bump the namespace so pre-change seven-day Redis entries are never reused.
+const REPORT_CACHE_NAMESPACE = 'report:v2';
 const REPORT_TTL_MS = 30 * DAY_MS;
 const FEEDBACK_TTL_MS = 90 * DAY_MS;
 const REPORT_CACHE_MAX = 500;
@@ -163,10 +165,18 @@ function calculateWriteHash(ownerId: string, apiPath: string, body: unknown): st
   return crypto.createHash('sha256').update(JSON.stringify({ ownerId, apiPath, body: protectedBody })).digest('hex');
 }
 
+function reportHashCacheKey(hash: string): string {
+  return `${REPORT_CACHE_NAMESPACE}:hash:${hash}`;
+}
+
+function reportIdCacheKey(reportId: string): string {
+  return `${REPORT_CACHE_NAMESPACE}:id:${reportId}`;
+}
+
 async function getReportCache(hash: string, ownerId: string): Promise<RiskReport | null> {
   if (isRedisAvailable()) {
     try {
-      const cached = await redis.get(`report:hash:${hash}`);
+      const cached = await redis.get(reportHashCacheKey(hash));
       if (cached) return JSON.parse(cached) as RiskReport;
     } catch {
       // Redis reconnects in the background; bounded memory remains available.
@@ -180,8 +190,8 @@ async function setReportCache(hash: string, report: RiskReport, ownerId: string)
   if (isRedisAvailable()) {
     try {
       await redis.multi()
-        .set(`report:hash:${hash}`, JSON.stringify(report), 'PX', REPORT_CACHE_TTL_MS)
-        .set(`report:id:${report.report_id}`, hash, 'PX', REPORT_CACHE_TTL_MS)
+        .set(reportHashCacheKey(hash), JSON.stringify(report), 'PX', REPORT_CACHE_TTL_MS)
+        .set(reportIdCacheKey(report.report_id), hash, 'PX', REPORT_CACHE_TTL_MS)
         .exec();
     } catch {
       // Keep the bounded in-process copy below as a fallback.
@@ -199,7 +209,7 @@ async function deleteReportCache(hash?: string, reportId?: string): Promise<void
   let resolvedHash = hash;
   if (!resolvedHash && reportId && isRedisAvailable()) {
     try {
-      resolvedHash = (await redis.get(`report:id:${reportId}`)) || undefined;
+      resolvedHash = (await redis.get(reportIdCacheKey(reportId))) || undefined;
     } catch {
       // Continue with local cleanup.
     }
@@ -207,12 +217,12 @@ async function deleteReportCache(hash?: string, reportId?: string): Promise<void
   if (isRedisAvailable()) {
     try {
       const keys = [
-        ...(resolvedHash ? [`report:hash:${resolvedHash}`] : []),
-        ...(reportId ? [`report:id:${reportId}`] : []),
+        ...(resolvedHash ? [reportHashCacheKey(resolvedHash)] : []),
+        ...(reportId ? [reportIdCacheKey(reportId)] : []),
       ];
       if (keys.length > 0) await redis.del(...keys);
     } catch {
-      // Redis keys retain their seven-day TTL if deletion is temporarily unavailable.
+      // Redis entries expire automatically if cleanup is temporarily unavailable.
     }
   }
   if (resolvedHash) reportCache.delete(resolvedHash);
