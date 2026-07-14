@@ -59,6 +59,12 @@ jobs:
           test "$metrics_code" = '200'
           jq '{window_minutes, requests, frontend_errors, ai_budget}' "$metrics_file"
 
+          backup_with_monitoring_token_code="$(curl --silent --show-error --location \
+            --connect-timeout 20 --max-time 120 --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer $MONITORING_TOKEN" \
+            "$API_URL/api/internal/backup")"
+          test "$backup_with_monitoring_token_code" = '401'
+
           total="$(jq -r '.requests.total' "$metrics_file")"
           success_rate="$(jq -r '.requests.success_rate // 1' "$metrics_file")"
           server_errors="$(jq -r '.requests.server_errors' "$metrics_file")"
