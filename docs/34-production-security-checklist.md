@@ -13,7 +13,7 @@
 | 大模型每日费用上限 | 通过 | Redis 原子控制每日 300 积分，Redis 故障时付费调用 fail closed |
 | 高敏信息持久化 | 通过 | 文本入库前拦截；OCR 结果缓存前二次检查，命中后不缓存、不落库 |
 | 数据库传输与静态加密 | 通过（平台能力） | Render Postgres 提供 TLS 传输及 AES-256 静态加密 |
-| 定期备份 | 通过 | GitHub Actions 每日执行加密 `pg_dump`，保留 14 天并校验可解密性 |
+| 定期备份 | 通过 | GitHub Actions 每日导出加密业务快照，保留 14 天并校验结构与可解密性 |
 | 前端错误监控 | 通过（基础版） | 捕获运行时错误和未处理 Promise，去重后上报；不上传堆栈和用户输入 |
 | API 成功率监控 | 通过 | Redis 分钟桶统计，受 Bearer token 保护的内部指标接口 |
 | 模型费用告警 | 通过 | 每 30 分钟巡检每日积分，达到 80% 使监控工作流失败并触发 GitHub 通知 |
@@ -58,13 +58,13 @@
 Render Free Postgres 没有平台自动备份或 PITR，因此新增 `backup-render-postgres.yml`：
 
 - 每天北京时间 03:30 执行。
-- 从 Render API 临时取得外部连接字符串，不写入日志或 artifact。
-- 使用 PostgreSQL custom format 执行 `pg_dump`。
+- 通过受 Bearer token 保护的 `GET /api/internal/backup`，从 Render 私网读取未删除的核心业务数据。
+- 快照包含岗位报告、HR 分析、面试反馈和报告纠错反馈；不复制 API 日志与安全事件中的 IP 数据。
 - 使用 AES-256-CBC、PBKDF2 200000 次迭代加密。
-- 解密后运行 `pg_restore --list` 验证备份结构。
+- 加密前核对各业务表记录数，解密后再次验证快照版本和 JSON 结构。
 - 只上传加密文件和 SHA-256 校验文件，保留 14 天。
 
-依赖 GitHub Secrets：`RENDER_API_KEY`、`BACKUP_ENCRYPTION_PASSPHRASE`。恢复时必须使用同一加密口令，并优先恢复到新的空数据库验证，禁止直接覆盖生产库。
+依赖 GitHub Secrets：`MONITORING_TOKEN`、`BACKUP_ENCRYPTION_PASSPHRASE`。恢复时必须使用同一加密口令，并优先导入新的空数据库验证，禁止直接覆盖生产库。该免费方案是应用级逻辑备份，不替代数据库 PITR。
 
 ## 4. 监控与告警
 

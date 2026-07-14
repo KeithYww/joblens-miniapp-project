@@ -572,6 +572,45 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(metrics.available ? 200 : 503).send(metrics);
   });
 
+  app.get('/api/internal/backup', async (request, reply) => {
+    if (!hasValidMonitoringToken(request)) {
+      return reply.status(401).send(buildErrorResponse('UNAUTHORIZED', '未授权访问。'));
+    }
+    if (!isDbAvailable()) {
+      return reply.status(503).send(buildErrorResponse('DEPENDENCY_UNAVAILABLE', '数据库暂时不可用。'));
+    }
+
+    try {
+      const [jobReports, hrAnalyses, interviewFeedbacks, reportFeedbacks] = await runDbOperation(() =>
+        prisma.$transaction([
+          prisma.jobReport.findMany({ where: { is_deleted: false }, orderBy: { id: 'asc' } }),
+          prisma.hrAnalysis.findMany({ where: { is_deleted: false }, orderBy: { id: 'asc' } }),
+          prisma.interviewFeedback.findMany({ where: { is_deleted: false }, orderBy: { id: 'asc' } }),
+          prisma.reportFeedback.findMany({ where: { is_deleted: false }, orderBy: { id: 'asc' } }),
+        ])
+      );
+      return reply.send({
+        schema_version: 'joblens-backup-v1',
+        generated_at: new Date().toISOString(),
+        counts: {
+          job_reports: jobReports.length,
+          hr_analyses: hrAnalyses.length,
+          interview_feedbacks: interviewFeedbacks.length,
+          report_feedbacks: reportFeedbacks.length,
+        },
+        data: {
+          job_reports: jobReports,
+          hr_analyses: hrAnalyses,
+          interview_feedbacks: interviewFeedbacks,
+          report_feedbacks: reportFeedbacks,
+        },
+      });
+    } catch (error) {
+      logInternalFailure(request, 'create backup snapshot', error);
+      return reply.status(503).send(buildErrorResponse('BACKUP_UNAVAILABLE', '备份快照暂时不可用。'));
+    }
+  });
+
   app.post('/api/client-errors', async (request, reply) => {
     const visitorId = requireVisitorId(request, reply);
     if (!visitorId) return;

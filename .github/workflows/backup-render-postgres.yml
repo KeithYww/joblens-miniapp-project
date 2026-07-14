@@ -1,4 +1,4 @@
-name: Backup Render Postgres
+name: Backup Production Data
 
 on:
   schedule:
@@ -16,71 +16,50 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     env:
-      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      MONITORING_TOKEN: ${{ secrets.MONITORING_TOKEN }}
       BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
-      RENDER_API: https://api.render.com/v1
-      DATABASE_NAME: joblens-preview-db
+      API_BASE_URL: https://joblens-preview-api.onrender.com
     steps:
-      - name: Install PostgreSQL client
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes postgresql-client
-
-      - name: Create encrypted logical backup
+      - name: Create encrypted application backup
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$RENDER_API_KEY"
+          test -n "$MONITORING_TOKEN"
           test -n "$BACKUP_ENCRYPTION_PASSPHRASE"
-
-          request() {
-            curl --connect-timeout 10 --max-time 30 --fail --silent --show-error --retry 3 --retry-all-errors \
-              -H 'Accept: application/json' \
-              -H "Authorization: Bearer $RENDER_API_KEY" \
-              "$@"
-          }
-
-          owner_id="$(request "$RENDER_API/owners?limit=1" | jq -r '.[0].owner.id // .[0].id // empty')"
-          test -n "$owner_id"
-          database_id="$(request "$RENDER_API/postgres?name=$DATABASE_NAME&ownerId=$owner_id&limit=1" | jq -r '.[0].postgres.id // .[0].id // empty')"
-          test -n "$database_id"
-          database_url="$(request "$RENDER_API/postgres/$database_id/connection-info" | jq -r '.externalConnectionString // empty')"
-          test -n "$database_url"
-          echo "::add-mask::$database_url"
 
           timestamp="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
           mkdir -p backups
-          dump="backups/joblens-$timestamp.dump"
-          encrypted="$dump.enc"
-          export PGCONNECT_TIMEOUT=20
-          for attempt in 1 2 3 4 5; do
-            if pg_dump "$database_url" --format=custom --compress=9 --no-owner --no-privileges --file="$dump"; then
-              break
-            fi
-            rm -f "$dump"
-            if [ "$attempt" -eq 5 ]; then
-              echo 'PostgreSQL backup failed after 5 attempts' >&2
-              exit 1
-            fi
-            sleep $((attempt * 15))
-          done
-          test -s "$dump"
+          snapshot="backups/joblens-$timestamp.json"
+          encrypted="$snapshot.enc"
+          curl --connect-timeout 15 --max-time 180 --fail --silent --show-error \
+            --retry 5 --retry-all-errors --retry-delay 15 \
+            -H 'Accept: application/json' \
+            -H "Authorization: Bearer $MONITORING_TOKEN" \
+            "$API_BASE_URL/api/internal/backup" > "$snapshot"
+          jq -e '
+            .schema_version == "joblens-backup-v1" and
+            (.generated_at | type == "string") and
+            (.counts.job_reports == (.data.job_reports | length)) and
+            (.counts.hr_analyses == (.data.hr_analyses | length)) and
+            (.counts.interview_feedbacks == (.data.interview_feedbacks | length)) and
+            (.counts.report_feedbacks == (.data.report_feedbacks | length))
+          ' "$snapshot" >/dev/null
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
-            -in "$dump" -out "$encrypted" -pass env:BACKUP_ENCRYPTION_PASSPHRASE
-          rm -f "$dump"
+            -in "$snapshot" -out "$encrypted" -pass env:BACKUP_ENCRYPTION_PASSPHRASE
+          rm -f "$snapshot"
           sha256sum "$encrypted" > "$encrypted.sha256"
-          verify_dump="$(mktemp)"
+          verify_snapshot="$(mktemp)"
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
-            -in "$encrypted" -out "$verify_dump" -pass env:BACKUP_ENCRYPTION_PASSPHRASE
-          pg_restore --list "$verify_dump" >/dev/null
-          rm -f "$verify_dump"
+            -in "$encrypted" -out "$verify_snapshot" -pass env:BACKUP_ENCRYPTION_PASSPHRASE
+          jq -e '.schema_version == "joblens-backup-v1"' "$verify_snapshot" >/dev/null
+          rm -f "$verify_snapshot"
 
       - name: Upload encrypted backup
         uses: actions/upload-artifact@v4
         with:
-          name: postgres-backup-${{ github.run_id }}
+          name: production-data-backup-${{ github.run_id }}
           path: |
-            backups/*.dump.enc
-            backups/*.dump.enc.sha256
+            backups/*.json.enc
+            backups/*.json.enc.sha256
           if-no-files-found: error
           retention-days: 14

@@ -103,7 +103,7 @@ export async function createServer(): Promise<FastifyInstance> {
 
   app.addHook('onResponse', async (request, reply) => {
     const path = request.url.split('?')[0];
-    if (!path.startsWith('/api/') || path === '/api/health' || path === '/api/internal/metrics' || path === '/api/client-errors') return;
+    if (!path.startsWith('/api/') || path === '/api/health' || path.startsWith('/api/internal/') || path === '/api/client-errors') return;
     await recordApiResponse(reply.statusCode);
   });
 

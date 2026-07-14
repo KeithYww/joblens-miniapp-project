@@ -59,6 +59,10 @@ test('operational metrics require a bearer token and client errors are accepted 
     });
     assert.equal(wrongToken.statusCode, 401);
 
+    const missingBackupToken = await app.inject({ method: 'GET', url: '/api/internal/backup' });
+    assert.equal(missingBackupToken.statusCode, 401);
+    assert.equal(missingBackupToken.json().error, 'UNAUTHORIZED');
+
     const acceptedError = await app.inject({
       method: 'POST',
       url: '/api/client-errors',
