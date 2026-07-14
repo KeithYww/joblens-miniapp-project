@@ -95,8 +95,8 @@ function buildErrorResponse(
   return response;
 }
 
-function hasValidMonitoringToken(request: FastifyRequest): boolean {
-  const expected = process.env.MONITORING_TOKEN?.trim();
+function hasValidBearerToken(request: FastifyRequest, environmentVariable: 'MONITORING_TOKEN' | 'BACKUP_TOKEN'): boolean {
+  const expected = process.env[environmentVariable]?.trim();
   const authorization = request.headers.authorization;
   if (!expected || !authorization?.startsWith('Bearer ')) return false;
   const received = authorization.slice('Bearer '.length).trim();
@@ -104,6 +104,10 @@ function hasValidMonitoringToken(request: FastifyRequest): boolean {
   const receivedBuffer = Buffer.from(received);
   return expectedBuffer.length === receivedBuffer.length
     && crypto.timingSafeEqual(expectedBuffer, receivedBuffer);
+}
+
+function omitIpAddresses<T extends { ip_address: string | null }>(records: T[]): Omit<T, 'ip_address'>[] {
+  return records.map(({ ip_address: _ipAddress, ...record }) => record);
 }
 
 function logInternalFailure(request: FastifyRequest, operation: string, error: unknown): void {
@@ -563,7 +567,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/internal/metrics', async (request, reply) => {
-    if (!hasValidMonitoringToken(request)) {
+    if (!hasValidBearerToken(request, 'MONITORING_TOKEN')) {
       return reply.status(401).send(buildErrorResponse('UNAUTHORIZED', '未授权访问。'));
     }
     const rawWindow = (request.query as { window_minutes?: string }).window_minutes;
@@ -573,7 +577,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/internal/backup', async (request, reply) => {
-    if (!hasValidMonitoringToken(request)) {
+    if (!hasValidBearerToken(request, 'BACKUP_TOKEN')) {
       return reply.status(401).send(buildErrorResponse('UNAUTHORIZED', '未授权访问。'));
     }
     if (!isDbAvailable()) {
@@ -589,20 +593,24 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           prisma.reportFeedback.findMany({ where: { is_deleted: false }, orderBy: { id: 'asc' } }),
         ])
       );
+      const backupJobReports = omitIpAddresses(jobReports);
+      const backupHrAnalyses = omitIpAddresses(hrAnalyses);
+      const backupInterviewFeedbacks = omitIpAddresses(interviewFeedbacks);
+      const backupReportFeedbacks = omitIpAddresses(reportFeedbacks);
       return reply.send({
         schema_version: 'joblens-backup-v1',
         generated_at: new Date().toISOString(),
         counts: {
-          job_reports: jobReports.length,
-          hr_analyses: hrAnalyses.length,
-          interview_feedbacks: interviewFeedbacks.length,
-          report_feedbacks: reportFeedbacks.length,
+          job_reports: backupJobReports.length,
+          hr_analyses: backupHrAnalyses.length,
+          interview_feedbacks: backupInterviewFeedbacks.length,
+          report_feedbacks: backupReportFeedbacks.length,
         },
         data: {
-          job_reports: jobReports,
-          hr_analyses: hrAnalyses,
-          interview_feedbacks: interviewFeedbacks,
-          report_feedbacks: reportFeedbacks,
+          job_reports: backupJobReports,
+          hr_analyses: backupHrAnalyses,
+          interview_feedbacks: backupInterviewFeedbacks,
+          report_feedbacks: backupReportFeedbacks,
         },
       });
     } catch (error) {

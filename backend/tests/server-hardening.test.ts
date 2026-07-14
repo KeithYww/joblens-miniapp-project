@@ -41,10 +41,12 @@ test('operational metrics require a bearer token and client errors are accepted 
     REQUIRE_DATABASE: process.env.REQUIRE_DATABASE,
     REQUIRE_REDIS: process.env.REQUIRE_REDIS,
     MONITORING_TOKEN: process.env.MONITORING_TOKEN,
+    BACKUP_TOKEN: process.env.BACKUP_TOKEN,
   };
   process.env.REQUIRE_DATABASE = 'false';
   process.env.REQUIRE_REDIS = 'false';
   process.env.MONITORING_TOKEN = 'test-monitoring-token-with-sufficient-entropy';
+  process.env.BACKUP_TOKEN = 'test-backup-token-with-separate-sufficient-entropy';
   const { createServer } = await import('../src/index');
   const app = await createServer();
   try {
@@ -62,6 +64,21 @@ test('operational metrics require a bearer token and client errors are accepted 
     const missingBackupToken = await app.inject({ method: 'GET', url: '/api/internal/backup' });
     assert.equal(missingBackupToken.statusCode, 401);
     assert.equal(missingBackupToken.json().error, 'UNAUTHORIZED');
+
+    const monitoringTokenCannotExport = await app.inject({
+      method: 'GET',
+      url: '/api/internal/backup',
+      headers: { authorization: 'Bearer test-monitoring-token-with-sufficient-entropy' },
+    });
+    assert.equal(monitoringTokenCannotExport.statusCode, 401);
+
+    const authorizedBackup = await app.inject({
+      method: 'GET',
+      url: '/api/internal/backup',
+      headers: { authorization: 'Bearer test-backup-token-with-separate-sufficient-entropy' },
+    });
+    assert.equal(authorizedBackup.statusCode, 503);
+    assert.equal(authorizedBackup.json().error, 'DEPENDENCY_UNAVAILABLE');
 
     const acceptedError = await app.inject({
       method: 'POST',

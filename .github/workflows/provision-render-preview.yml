@@ -20,6 +20,7 @@ jobs:
       SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
       TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
       MONITORING_TOKEN: ${{ secrets.MONITORING_TOKEN }}
+      BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
       RENDER_API: https://api.render.com/v1
       RENDER_REGION: oregon
       RENDER_DATABASE_NAME: joblens-preview-db
@@ -58,6 +59,7 @@ jobs:
           test -n "$owner_id"
           test -n "$TURNSTILE_SECRET_KEY"
           test -n "$MONITORING_TOKEN"
+          test -n "$BACKUP_TOKEN"
 
           existing_id() {
             local endpoint="$1"
@@ -121,8 +123,9 @@ jobs:
               --arg siliconflowApiKey "$SILICONFLOW_API_KEY" \
               --arg turnstileSecretKey "$TURNSTILE_SECRET_KEY" \
               --arg monitoringToken "$MONITORING_TOKEN" \
+              --arg backupToken "$BACKUP_TOKEN" \
               --arg corsOrigin "$VERCEL_ORIGIN" \
-              '{type:"web_service",name:"joblens-preview-api",ownerId:$ownerId,repo:"https://github.com/KeithYww/joblens-miniapp-project",branch:"main",autoDeploy:"yes",rootDir:"backend",envVars:[{key:"NODE_ENV",value:"production"},{key:"DATABASE_URL",value:$databaseUrl},{key:"REDIS_URL",value:$redisUrl},{key:"REQUIRE_DATABASE",value:"true"},{key:"REQUIRE_REDIS",value:"true"},{key:"TRUST_PROXY",value:"1"},{key:"BODY_LIMIT_BYTES",value:"10485760"},{key:"CORS_ORIGIN",value:$corsOrigin},{key:"AI_PROVIDER",value:"siliconflow"},{key:"SILICONFLOW_API_KEY",value:$siliconflowApiKey},{key:"SILICONFLOW_MODEL",value:"Qwen/Qwen2.5-72B-Instruct"},{key:"SILICONFLOW_VISION_MODEL",value:"Qwen/Qwen3-VL-8B-Instruct"},{key:"AI_CALLS_ENABLED",value:"true"},{key:"AI_DAILY_CREDIT_LIMIT",value:"300"},{key:"ANON_DAILY_OCR_LIMIT",value:"3"},{key:"ANON_DAILY_ANALYSIS_LIMIT",value:"3"},{key:"IP_DAILY_OCR_LIMIT",value:"20"},{key:"IP_DAILY_ANALYSIS_LIMIT",value:"30"},{key:"AI_MAX_TOTAL_CONCURRENCY",value:"4"},{key:"AI_MAX_OCR_CONCURRENCY",value:"2"},{key:"AI_MAX_ANALYSIS_CONCURRENCY",value:"3"},{key:"OCR_CACHE_TTL_SECONDS",value:"86400"},{key:"TURNSTILE_SECRET_KEY",value:$turnstileSecretKey},{key:"TURNSTILE_EXPECTED_HOSTNAME",value:"joblens-miniapp.vercel.app"},{key:"CAPTCHA_MODE",value:"managed"},{key:"MONITORING_TOKEN",value:$monitoringToken}],serviceDetails:{runtime:"node",plan:"free",region:"oregon",healthCheckPath:"/api/health",envSpecificDetails:{buildCommand:"npm ci --include=dev && npx prisma generate && npm run build",startCommand:"npm run prisma:deploy && npm start"}}}')"
+              '{type:"web_service",name:"joblens-preview-api",ownerId:$ownerId,repo:"https://github.com/KeithYww/joblens-miniapp-project",branch:"main",autoDeploy:"yes",rootDir:"backend",envVars:[{key:"NODE_ENV",value:"production"},{key:"DATABASE_URL",value:$databaseUrl},{key:"REDIS_URL",value:$redisUrl},{key:"REQUIRE_DATABASE",value:"true"},{key:"REQUIRE_REDIS",value:"true"},{key:"TRUST_PROXY",value:"1"},{key:"BODY_LIMIT_BYTES",value:"10485760"},{key:"CORS_ORIGIN",value:$corsOrigin},{key:"AI_PROVIDER",value:"siliconflow"},{key:"SILICONFLOW_API_KEY",value:$siliconflowApiKey},{key:"SILICONFLOW_MODEL",value:"Qwen/Qwen2.5-72B-Instruct"},{key:"SILICONFLOW_VISION_MODEL",value:"Qwen/Qwen3-VL-8B-Instruct"},{key:"AI_CALLS_ENABLED",value:"true"},{key:"AI_DAILY_CREDIT_LIMIT",value:"300"},{key:"ANON_DAILY_OCR_LIMIT",value:"3"},{key:"ANON_DAILY_ANALYSIS_LIMIT",value:"3"},{key:"IP_DAILY_OCR_LIMIT",value:"20"},{key:"IP_DAILY_ANALYSIS_LIMIT",value:"30"},{key:"AI_MAX_TOTAL_CONCURRENCY",value:"4"},{key:"AI_MAX_OCR_CONCURRENCY",value:"2"},{key:"AI_MAX_ANALYSIS_CONCURRENCY",value:"3"},{key:"OCR_CACHE_TTL_SECONDS",value:"86400"},{key:"TURNSTILE_SECRET_KEY",value:$turnstileSecretKey},{key:"TURNSTILE_EXPECTED_HOSTNAME",value:"joblens-miniapp.vercel.app"},{key:"CAPTCHA_MODE",value:"managed"},{key:"MONITORING_TOKEN",value:$monitoringToken},{key:"BACKUP_TOKEN",value:$backupToken}],serviceDetails:{runtime:"node",plan:"free",region:"oregon",healthCheckPath:"/api/health",envSpecificDetails:{buildCommand:"npm ci --include=dev && npx prisma generate && npm run build",startCommand:"npm run prisma:deploy && npm start"}}}')"
             service_id="$(request -X POST -H 'Content-Type: application/json' --data "$payload" "$RENDER_API/services" | jq -r '.id')"
           else
             request -X PATCH -H 'Content-Type: application/json' \
@@ -132,8 +135,9 @@ jobs:
                 --arg siliconflowApiKey "$SILICONFLOW_API_KEY" \
                 --arg turnstileSecretKey "$TURNSTILE_SECRET_KEY" \
                 --arg monitoringToken "$MONITORING_TOKEN" \
+                --arg backupToken "$BACKUP_TOKEN" \
                 --arg corsOrigin "$VERCEL_ORIGIN" \
-                '{envVars:[{key:"NODE_ENV",value:"production"},{key:"DATABASE_URL",value:$databaseUrl},{key:"REDIS_URL",value:$redisUrl},{key:"REQUIRE_DATABASE",value:"true"},{key:"REQUIRE_REDIS",value:"true"},{key:"TRUST_PROXY",value:"1"},{key:"BODY_LIMIT_BYTES",value:"10485760"},{key:"CORS_ORIGIN",value:$corsOrigin},{key:"AI_PROVIDER",value:"siliconflow"},{key:"SILICONFLOW_API_KEY",value:$siliconflowApiKey},{key:"SILICONFLOW_MODEL",value:"Qwen/Qwen2.5-72B-Instruct"},{key:"SILICONFLOW_VISION_MODEL",value:"Qwen/Qwen3-VL-8B-Instruct"},{key:"AI_CALLS_ENABLED",value:"true"},{key:"AI_DAILY_CREDIT_LIMIT",value:"300"},{key:"ANON_DAILY_OCR_LIMIT",value:"3"},{key:"ANON_DAILY_ANALYSIS_LIMIT",value:"3"},{key:"IP_DAILY_OCR_LIMIT",value:"20"},{key:"IP_DAILY_ANALYSIS_LIMIT",value:"30"},{key:"AI_MAX_TOTAL_CONCURRENCY",value:"4"},{key:"AI_MAX_OCR_CONCURRENCY",value:"2"},{key:"AI_MAX_ANALYSIS_CONCURRENCY",value:"3"},{key:"OCR_CACHE_TTL_SECONDS",value:"86400"},{key:"TURNSTILE_SECRET_KEY",value:$turnstileSecretKey},{key:"TURNSTILE_EXPECTED_HOSTNAME",value:"joblens-miniapp.vercel.app"},{key:"CAPTCHA_MODE",value:"managed"},{key:"MONITORING_TOKEN",value:$monitoringToken}],serviceDetails:{envSpecificDetails:{buildCommand:"npm ci --include=dev && npx prisma generate && npm run build",startCommand:"npm run prisma:deploy && npm start"}}}')" \
+                '{envVars:[{key:"NODE_ENV",value:"production"},{key:"DATABASE_URL",value:$databaseUrl},{key:"REDIS_URL",value:$redisUrl},{key:"REQUIRE_DATABASE",value:"true"},{key:"REQUIRE_REDIS",value:"true"},{key:"TRUST_PROXY",value:"1"},{key:"BODY_LIMIT_BYTES",value:"10485760"},{key:"CORS_ORIGIN",value:$corsOrigin},{key:"AI_PROVIDER",value:"siliconflow"},{key:"SILICONFLOW_API_KEY",value:$siliconflowApiKey},{key:"SILICONFLOW_MODEL",value:"Qwen/Qwen2.5-72B-Instruct"},{key:"SILICONFLOW_VISION_MODEL",value:"Qwen/Qwen3-VL-8B-Instruct"},{key:"AI_CALLS_ENABLED",value:"true"},{key:"AI_DAILY_CREDIT_LIMIT",value:"300"},{key:"ANON_DAILY_OCR_LIMIT",value:"3"},{key:"ANON_DAILY_ANALYSIS_LIMIT",value:"3"},{key:"IP_DAILY_OCR_LIMIT",value:"20"},{key:"IP_DAILY_ANALYSIS_LIMIT",value:"30"},{key:"AI_MAX_TOTAL_CONCURRENCY",value:"4"},{key:"AI_MAX_OCR_CONCURRENCY",value:"2"},{key:"AI_MAX_ANALYSIS_CONCURRENCY",value:"3"},{key:"OCR_CACHE_TTL_SECONDS",value:"86400"},{key:"TURNSTILE_SECRET_KEY",value:$turnstileSecretKey},{key:"TURNSTILE_EXPECTED_HOSTNAME",value:"joblens-miniapp.vercel.app"},{key:"CAPTCHA_MODE",value:"managed"},{key:"MONITORING_TOKEN",value:$monitoringToken},{key:"BACKUP_TOKEN",value:$backupToken}],serviceDetails:{envSpecificDetails:{buildCommand:"npm ci --include=dev && npx prisma generate && npm run build",startCommand:"npm run prisma:deploy && npm start"}}}')" \
               "$RENDER_API/services/$service_id" >/dev/null
             # Render treats service environment variables as a separate nested resource.
             # Keep this explicit update so newly introduced secrets reach existing services.
@@ -149,6 +153,9 @@ jobs:
             request -X PUT -H 'Content-Type: application/json' \
               --data "$(jq -nc --arg value "$MONITORING_TOKEN" '{value:$value}')" \
               "$RENDER_API/services/$service_id/env-vars/MONITORING_TOKEN" >/dev/null
+            request -X PUT -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg value "$BACKUP_TOKEN" '{value:$value}')" \
+              "$RENDER_API/services/$service_id/env-vars/BACKUP_TOKEN" >/dev/null
             deploy_response="$(request -X POST -H 'Content-Type: application/json' --data '{"clearCache":"clear"}' "$RENDER_API/services/$service_id/deploys")"
             deploy_id="$(jq -r '.deploy.id // .id // empty' <<<"$deploy_response")"
             test -n "$deploy_id"

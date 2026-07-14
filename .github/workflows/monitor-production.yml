@@ -17,8 +17,26 @@ jobs:
     runs-on: ubuntu-latest
     env:
       API_URL: https://joblens-preview-api.onrender.com
+      FRONTEND_URL: https://joblens-miniapp.vercel.app
       MONITORING_TOKEN: ${{ secrets.MONITORING_TOKEN }}
     steps:
+      - name: Check frontend availability
+        shell: bash
+        run: |
+          set -euo pipefail
+          frontend_file="$(mktemp)"
+          frontend_code="$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 --output "$frontend_file" --write-out '%{http_code}' \
+            "$FRONTEND_URL/")"
+          test "$frontend_code" = '200'
+          grep -F '<title>职镜 JobLens - 岗位风险智能检测</title>' "$frontend_file" >/dev/null
+          grep -F '<div id="root"></div>' "$frontend_file" >/dev/null
+          script_path="$(grep -oE 'src="/assets/[^"]+\.js"' "$frontend_file" | head -1 | cut -d'"' -f2)"
+          test -n "$script_path"
+          curl --silent --show-error --fail --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 --output /dev/null \
+            "$FRONTEND_URL$script_path"
+
       - name: Check health and operational thresholds
         shell: bash
         run: |

@@ -16,7 +16,7 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     env:
-      MONITORING_TOKEN: ${{ secrets.MONITORING_TOKEN }}
+      BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
       BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
       API_BASE_URL: https://joblens-preview-api.onrender.com
     steps:
@@ -24,7 +24,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$MONITORING_TOKEN"
+          test -n "$BACKUP_TOKEN"
           test -n "$BACKUP_ENCRYPTION_PASSPHRASE"
 
           timestamp="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
@@ -34,7 +34,7 @@ jobs:
           curl --connect-timeout 15 --max-time 180 --fail --silent --show-error \
             --retry 5 --retry-all-errors --retry-delay 15 \
             -H 'Accept: application/json' \
-            -H "Authorization: Bearer $MONITORING_TOKEN" \
+            -H "Authorization: Bearer $BACKUP_TOKEN" \
             "$API_BASE_URL/api/internal/backup" > "$snapshot"
           jq -e '
             .schema_version == "joblens-backup-v1" and
@@ -42,7 +42,8 @@ jobs:
             (.counts.job_reports == (.data.job_reports | length)) and
             (.counts.hr_analyses == (.data.hr_analyses | length)) and
             (.counts.interview_feedbacks == (.data.interview_feedbacks | length)) and
-            (.counts.report_feedbacks == (.data.report_feedbacks | length))
+            (.counts.report_feedbacks == (.data.report_feedbacks | length)) and
+            ([.data[][] | has("ip_address")] | all(. == false))
           ' "$snapshot" >/dev/null
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
             -in "$snapshot" -out "$encrypted" -pass env:BACKUP_ENCRYPTION_PASSPHRASE

@@ -65,6 +65,8 @@ services:
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
       CAPTCHA_BYPASS: "false"
       DATA_CLEANUP_INTERVAL_MS: ${DATA_CLEANUP_INTERVAL_MS:-3600000}
+      MONITORING_TOKEN: ${MONITORING_TOKEN}
+      BACKUP_TOKEN: ${BACKUP_TOKEN}
     depends_on:
       postgres:
         condition: service_healthy
