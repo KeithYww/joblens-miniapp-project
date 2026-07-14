@@ -297,10 +297,15 @@ export function FeedbackForm({
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  const trimmedContentLength = content.trim().length;
+  const contentTooShort = content.length > 0 && trimmedContentLength < 10;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!content.trim()) return;
+    if (trimmedContentLength < 10) {
+      setSubmitError('请至少填写 10 个字符的详细说明。');
+      return;
+    }
     setSubmitting(true);
     setSubmitError('');
     try {
@@ -359,14 +364,16 @@ export function FeedbackForm({
           className="w-full h-24 p-4 rounded-xl border border-gray-200 focus:border-primary-500 focus:ring-primary-200 focus:outline-none focus:ring-2 resize-none"
           maxLength={2000}
         />
-        <div className="text-xs text-gray-400 mt-1">{content.length}/2000 字</div>
+        <div className={`text-xs mt-1 ${contentTooShort ? 'text-danger-500' : 'text-gray-400'}`}>
+          {content.length}/2000 字{contentTooShort ? '，至少需要 10 个字符' : ''}
+        </div>
       </div>
       {submitError && (
         <p className="text-sm text-danger-600 bg-danger-50 rounded-lg p-3">{submitError}</p>
       )}
       <button
         type="submit"
-        disabled={!content.trim() || submitting || disabled}
+        disabled={trimmedContentLength < 10 || submitting || disabled}
         className="w-full py-3 rounded-xl font-medium gradient-primary text-white disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
       >
         {submitting ? '提交中...' : '提交反馈'}

@@ -135,7 +135,7 @@ export const InterviewFeedbackRequestSchema = z.object({
 export const ReportFeedbackRequestSchema = z.object({
   report_id: z.string().regex(/^rep_[a-z0-9]{12}$/),
   feedback_type: z.enum(['判断不准', '证据不足', '表达不当', '其他']),
-  content: z.string().min(10).max(2000),
+  content: z.string().trim().min(10, '反馈内容至少需要 10 个字符').max(2000, '反馈内容不能超过 2000 个字符'),
   captcha_token: z.string().optional(),
 });
 

@@ -743,7 +743,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const requestId = generateId('req');
     const apiPath = '/api/report-feedbacks';
     const parsed = ReportFeedbackRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
+    if (!parsed.success) {
+      return reply.status(400).send(buildErrorResponse(
+        'VALIDATION_ERROR',
+        '反馈内容或类型不符合要求。',
+        parsed.error.errors.map(error => ({ field: error.path.join('.'), issue: error.message })),
+      ));
+    }
     if (!await findOwnedReport(parsed.data.report_id, visitorId)) {
       return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
     }
