@@ -1,13 +1,24 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import type { RiskReport, HrAnalysis, ApiError } from '../types';
+import crypto from 'crypto';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type {
+  ApiError,
+  HrAnalysis,
+  InterviewFeedbackRequest,
+  ReportFeedbackRequest,
+  RiskReport,
+  VisitorDataDeleteResult,
+} from '../types';
 import {
+  containsHighSensitiveData,
+  CaptchaRequestSchema,
   DetectRequestSchema,
   HrAnalysisRequestSchema,
   InterviewFeedbackRequestSchema,
   ReportFeedbackRequestSchema,
+  VisitorIdSchema,
 } from '../schemas';
-import { prisma, isDbAvailable } from '../db/prisma';
-import { redis, isRedisAvailable } from '../db/redis';
+import { isDbAvailable, prisma, runDbOperation } from '../db/prisma';
+import { isRedisAvailable, redis } from '../db/redis';
 import { createLlmProviderWithFallback } from '../services/llm';
 import {
   checkRateLimit,
@@ -15,84 +26,258 @@ import {
   setCaptchaExempt,
   verifyCaptcha,
 } from '../services/rateLimit';
-import crypto from 'crypto';
+import { startDataRetentionScheduler } from '../services/dataRetention';
 
 const llmProvider = createLlmProviderWithFallback();
+const DAY_MS = 24 * 60 * 60 * 1000;
+const REPORT_CACHE_TTL_MS = 7 * DAY_MS;
+const REPORT_TTL_MS = 30 * DAY_MS;
+const FEEDBACK_TTL_MS = 90 * DAY_MS;
+const REPORT_CACHE_MAX = 500;
+const REPORT_STORE_MAX = 1_000;
+const HR_ANALYSIS_STORE_MAX = 2_000;
+const FEEDBACK_STORE_MAX = 3_000;
 
-function generateReportId(): string {
-  return `rep_${crypto.randomBytes(6).toString('hex')}`;
+interface TimedEntry<T> {
+  value: T;
+  ownerId: string;
+  reportId?: string;
+  inputHash?: string;
+  expiresAt: number;
 }
 
-function generateHrAnalysisId(): string {
-  return `hra_${crypto.randomBytes(6).toString('hex')}`;
+const reportCache = new Map<string, TimedEntry<RiskReport>>();
+const reportStore = new Map<string, TimedEntry<RiskReport>>();
+const hrAnalysisStore = new Map<string, TimedEntry<HrAnalysis>>();
+const interviewFeedbackStore = new Map<string, TimedEntry<InterviewFeedbackRequest>>();
+const reportFeedbackStore = new Map<string, TimedEntry<ReportFeedbackRequest>>();
+
+function generateId(prefix: string): string {
+  return `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 }
 
-function generateFeedbackId(): string {
-  return `fb_${crypto.randomBytes(6).toString('hex')}`;
+function buildErrorResponse(
+  error: string,
+  message: string,
+  details?: { field: string; issue: string }[],
+  captchaProvider?: string,
+  retryAfter?: string
+): ApiError {
+  const response: ApiError = { error, message };
+  if (details) response.details = details;
+  if (captchaProvider) response.captcha_provider = captchaProvider;
+  if (retryAfter) response.retry_after = retryAfter;
+  return response;
 }
 
-function generateReportFeedbackId(): string {
-  return `rfb_${crypto.randomBytes(6).toString('hex')}`;
+function logInternalFailure(request: FastifyRequest, operation: string, error: unknown): void {
+  request.log.error({
+    operation,
+    error_name: error instanceof Error ? error.name : 'UnknownError',
+  }, `${operation} failed`);
 }
 
-function generateRequestId(): string {
-  return `req_${crypto.randomBytes(6).toString('hex')}`;
+function requireVisitorId(request: FastifyRequest, reply: FastifyReply): string | null {
+  const raw = request.headers['x-visitor-id'];
+  const parsed = VisitorIdSchema.safeParse(Array.isArray(raw) ? raw[0] : raw);
+  if (!parsed.success) {
+    void reply.status(400).send(buildErrorResponse(
+      'INVALID_VISITOR_ID',
+      '缺少有效的匿名访问标识。'
+    ));
+    return null;
+  }
+  return parsed.data;
 }
 
-function calculateInputHash(jdText: string, hrChatText?: string): string {
-  const input = `${jdText}${hrChatText || ''}`;
-  return crypto.createHash('sha256').update(input).digest('hex');
+function setBoundedEntry<T>(
+  store: Map<string, TimedEntry<T>>,
+  key: string,
+  entry: TimedEntry<T>,
+  maxSize: number
+): void {
+  const now = Date.now();
+  for (const [existingKey, existing] of store) {
+    if (existing.expiresAt <= now) store.delete(existingKey);
+  }
+  if (store.has(key)) store.delete(key);
+  while (store.size >= maxSize) {
+    const oldestKey = store.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    store.delete(oldestKey);
+  }
+  store.set(key, entry);
 }
 
-const reportCache = new Map<string, RiskReport>();
-const reportStore = new Map<string, RiskReport>();
-const reportInputHashes = new Map<string, string>();
-const hrAnalysisStore = new Map<string, HrAnalysis>();
-const interviewFeedbackStore = new Map<string, unknown>();
-const reportFeedbackStore = new Map<string, unknown>();
+function getLiveEntry<T>(store: Map<string, TimedEntry<T>>, key: string): TimedEntry<T> | null {
+  const entry = store.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    store.delete(key);
+    return null;
+  }
+  return entry;
+}
 
-async function getReportCache(hash: string): Promise<RiskReport | null> {
+function calculateInputHash(
+  input: {
+    source_platform?: string;
+    company_name?: string;
+    job_title?: string;
+    jd_text: string;
+    hr_chat_text?: string;
+  },
+  ownerId: string
+): string {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    owner_id: ownerId,
+    source_platform: input.source_platform || '',
+    company_name: input.company_name || '',
+    job_title: input.job_title || '',
+    jd_text: input.jd_text,
+    hr_chat_text: input.hr_chat_text || '',
+  })).digest('hex');
+}
+
+function calculateWriteHash(ownerId: string, apiPath: string, body: unknown): string {
+  const protectedBody = body && typeof body === 'object'
+    ? { ...(body as Record<string, unknown>), captcha_token: undefined }
+    : body;
+  return crypto.createHash('sha256').update(JSON.stringify({ ownerId, apiPath, body: protectedBody })).digest('hex');
+}
+
+async function getReportCache(hash: string, ownerId: string): Promise<RiskReport | null> {
   if (isRedisAvailable()) {
     try {
       const cached = await redis.get(`report:hash:${hash}`);
       if (cached) return JSON.parse(cached) as RiskReport;
     } catch {
-      // fallback
+      // Redis reconnects in the background; bounded memory remains available.
     }
   }
-  return reportCache.get(hash) || null;
+  const entry = getLiveEntry(reportCache, hash);
+  return entry?.ownerId === ownerId ? entry.value : null;
 }
 
-async function setReportCache(hash: string, report: RiskReport): Promise<void> {
+async function setReportCache(hash: string, report: RiskReport, ownerId: string): Promise<void> {
   if (isRedisAvailable()) {
     try {
-      await redis.set(`report:hash:${hash}`, JSON.stringify(report));
-      await redis.expire(`report:hash:${hash}`, 604800);
-      return;
+      await redis.multi()
+        .set(`report:hash:${hash}`, JSON.stringify(report), 'PX', REPORT_CACHE_TTL_MS)
+        .set(`report:id:${report.report_id}`, hash, 'PX', REPORT_CACHE_TTL_MS)
+        .exec();
     } catch {
-      // fallback
+      // Keep the bounded in-process copy below as a fallback.
     }
   }
-  reportCache.set(hash, report);
-  setTimeout(() => reportCache.delete(hash), 604800 * 1000);
+  setBoundedEntry(reportCache, hash, {
+    value: report,
+    ownerId,
+    inputHash: hash,
+    expiresAt: Date.now() + REPORT_CACHE_TTL_MS,
+  }, REPORT_CACHE_MAX);
 }
 
-async function delReportCache(hash: string): Promise<void> {
+async function deleteReportCache(hash?: string, reportId?: string): Promise<void> {
+  let resolvedHash = hash;
+  if (!resolvedHash && reportId && isRedisAvailable()) {
+    try {
+      resolvedHash = (await redis.get(`report:id:${reportId}`)) || undefined;
+    } catch {
+      // Continue with local cleanup.
+    }
+  }
   if (isRedisAvailable()) {
     try {
-      await redis.del(`report:hash:${hash}`);
+      const keys = [
+        ...(resolvedHash ? [`report:hash:${resolvedHash}`] : []),
+        ...(reportId ? [`report:id:${reportId}`] : []),
+      ];
+      if (keys.length > 0) await redis.del(...keys);
     } catch {
-      // fallback
+      // Redis keys retain their seven-day TTL if deletion is temporarily unavailable.
     }
   }
-  reportCache.delete(hash);
+  if (resolvedHash) reportCache.delete(resolvedHash);
 }
 
-async function deleteMemoryReport(reportId: string): Promise<void> {
-  reportStore.delete(reportId);
-  const inputHash = reportInputHashes.get(reportId);
-  reportInputHashes.delete(reportId);
-  if (inputHash) await delReportCache(inputHash);
+function storeReport(report: RiskReport, ownerId: string, inputHash: string): void {
+  setBoundedEntry(reportStore, report.report_id, {
+    value: report,
+    ownerId,
+    inputHash,
+    expiresAt: Date.now() + REPORT_TTL_MS,
+  }, REPORT_STORE_MAX);
+}
+
+async function deleteMemoryReport(reportId: string, ownerId?: string, inputHash?: string): Promise<void> {
+  const reportEntry = reportStore.get(reportId);
+  if (!ownerId || !reportEntry || reportEntry.ownerId === ownerId) {
+    reportStore.delete(reportId);
+    await deleteReportCache(inputHash || reportEntry?.inputHash, reportId);
+  }
+  for (const [id, entry] of hrAnalysisStore) {
+    if (entry.reportId === reportId && (!ownerId || entry.ownerId === ownerId)) hrAnalysisStore.delete(id);
+  }
+  for (const [id, entry] of reportFeedbackStore) {
+    if (entry.reportId === reportId && (!ownerId || entry.ownerId === ownerId)) reportFeedbackStore.delete(id);
+  }
+  for (const [id, entry] of interviewFeedbackStore) {
+    if (entry.reportId === reportId && (!ownerId || entry.ownerId === ownerId)) interviewFeedbackStore.delete(id);
+  }
+}
+
+function toRiskReport(report: {
+  report_id: string;
+  overall_score: number;
+  risk_level: string;
+  confidence: string;
+  predicted_role: string | null;
+  risk_types: unknown;
+  sub_scores: unknown;
+  strong_risk_adjustment: number;
+  evidence: unknown;
+  missing_info: unknown;
+  questions: unknown;
+  recommendation: string;
+  disclaimer: string;
+  created_at: Date;
+}): RiskReport {
+  return {
+    report_id: report.report_id,
+    overall_score: report.overall_score,
+    risk_level: report.risk_level as RiskReport['risk_level'],
+    confidence: report.confidence as RiskReport['confidence'],
+    predicted_role: report.predicted_role,
+    risk_types: report.risk_types as string[],
+    sub_scores: JSON.parse(JSON.stringify(report.sub_scores)) as RiskReport['sub_scores'],
+    strong_risk_adjustment: report.strong_risk_adjustment,
+    evidence: report.evidence as string[],
+    missing_info: report.missing_info as string[],
+    questions: report.questions as string[],
+    recommendation: report.recommendation,
+    disclaimer: report.disclaimer,
+    created_at: report.created_at.toISOString(),
+  };
+}
+
+async function findOwnedReport(reportId: string, ownerId: string): Promise<{
+  report: RiskReport;
+  inputHash: string;
+} | null> {
+  const memory = getLiveEntry(reportStore, reportId);
+  if (memory?.ownerId === ownerId) {
+    return { report: memory.value, inputHash: memory.inputHash || '' };
+  }
+  if (!isDbAvailable()) return null;
+
+  const report = await runDbOperation(() => prisma.jobReport.findFirst({
+    where: { report_id: reportId, visitor_id: ownerId, is_deleted: false },
+  }));
+  if (!report) return null;
+  const riskReport = toRiskReport(report);
+  storeReport(riskReport, ownerId, report.input_hash);
+  return { report: riskReport, inputHash: report.input_hash };
 }
 
 interface LogApiRequestParams {
@@ -120,7 +305,7 @@ interface LogApiRequestParams {
 async function logApiRequest(params: LogApiRequestParams): Promise<void> {
   if (!isDbAvailable()) return;
   try {
-    await prisma.apiLog.create({
+    await runDbOperation(() => prisma.apiLog.create({
       data: {
         request_id: params.requestId,
         api_path: params.apiPath,
@@ -144,456 +329,545 @@ async function logApiRequest(params: LogApiRequestParams): Promise<void> {
         request_at: new Date(),
         response_at: new Date(),
       },
-    });
+    }));
   } catch {
-    // ignore
+    // Request handling must not fail because audit storage is temporarily unavailable.
   }
 }
 
-function buildErrorResponse(error: string, message: string, details?: { field: string; issue: string }[], captchaProvider?: string, retryAfter?: string): ApiError {
-  const response: ApiError = { error, message };
-  if (details) response.details = details;
-  if (captchaProvider) response.captcha_provider = captchaProvider;
-  if (retryAfter) response.retry_after = retryAfter;
-  return response;
+async function enforceWriteProtection(params: {
+  request: FastifyRequest;
+  reply: FastifyReply;
+  requestId: string;
+  visitorId: string;
+  apiPath: string;
+  captchaToken?: string;
+  inputHash?: string;
+}): Promise<boolean> {
+  const { request, reply, requestId, visitorId, apiPath, captchaToken, inputHash } = params;
+  await incrementRateLimit(request.ip, visitorId, apiPath, inputHash);
+  const result = await checkRateLimit(request.ip, visitorId, apiPath, inputHash);
+  if (result.blocked) {
+    await logApiRequest({
+      requestId, apiPath, method: request.method, visitorId, ip: request.ip,
+      httpStatus: 429, errorCode: 'RATE_LIMITED', errorMessage: '请求超过频率限制', rateLimited: true,
+    });
+    await reply.status(429).send(buildErrorResponse(
+      'RATE_LIMITED',
+      result.message || '请求过于频繁，请稍后重试。',
+      undefined,
+      undefined,
+      new Date(Date.now() + (result.retryAfter || 3600) * 1000).toISOString()
+    ));
+    return false;
+  }
+  if (result.requiresCaptcha) {
+    if (!captchaToken) {
+      await logApiRequest({
+        requestId, apiPath, method: request.method, visitorId, ip: request.ip,
+        httpStatus: 403, errorCode: 'CAPTCHA_REQUIRED', errorMessage: '需要验证码', captchaRequired: true,
+      });
+      await reply.status(403).send(buildErrorResponse(
+        'CAPTCHA_REQUIRED', result.message || '请先完成验证。', undefined, 'turnstile'
+      ));
+      return false;
+    }
+    const captcha = await verifyCaptcha(captchaToken, request.ip);
+    if (!captcha.success) {
+      await logApiRequest({
+        requestId, apiPath, method: request.method, visitorId, ip: request.ip,
+        httpStatus: 403, errorCode: 'CAPTCHA_FAILED', errorMessage: '验证码校验失败', captchaRequired: true,
+      });
+      await reply.status(403).send(buildErrorResponse(
+        'CAPTCHA_FAILED', captcha.reason || '验证码校验失败。'
+      ));
+      return false;
+    }
+    await setCaptchaExempt(visitorId);
+  }
+  return true;
+}
+
+async function rejectSensitiveData(params: {
+  values: Array<string | undefined>;
+  request: FastifyRequest;
+  reply: FastifyReply;
+  requestId: string;
+  visitorId: string;
+  apiPath: string;
+}): Promise<boolean> {
+  if (!containsHighSensitiveData(params.values)) return false;
+  await logApiRequest({
+    requestId: params.requestId,
+    apiPath: params.apiPath,
+    method: 'POST',
+    visitorId: params.visitorId,
+    ip: params.request.ip,
+    httpStatus: 400,
+    errorCode: 'SENSITIVE_DATA_DETECTED',
+    errorMessage: '输入包含高敏个人标识',
+  });
+  await params.reply.status(400).send(buildErrorResponse(
+    'SENSITIVE_DATA_DETECTED',
+    '输入中包含身份证号、银行卡号或完整手机号，请删除后重试。'
+  ));
+  return true;
 }
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
-  app.post('/api/reports/detect', async (request: FastifyRequest, reply: FastifyReply) => {
-    const requestId = generateRequestId();
-    const visitorId = request.headers['x-visitor-id'] as string;
-    const ip = request.ip;
-    const userAgent = request.headers['user-agent'] as string;
-
-    try {
-      const result = DetectRequestSchema.safeParse(request.body);
-      if (!result.success) {
-        await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 400, errorCode: 'VALIDATION_ERROR', errorMessage: '参数格式错误' });
-        return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误', result.error.errors.map(e => ({ field: e.path.join('.'), issue: e.message }))));
-      }
-
-      const totalLength = result.data.jd_text.length + (result.data.hr_chat_text?.length || 0);
-      if (totalLength > 12000) {
-        await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 413, errorCode: 'PAYLOAD_TOO_LARGE', errorMessage: '文本总长度超过限制' });
-        return reply.status(413).send(buildErrorResponse('PAYLOAD_TOO_LARGE', '文本总长度超过限制，请删减内容后重试。'));
-      }
-
-      const inputHash = calculateInputHash(result.data.jd_text, result.data.hr_chat_text);
-
-      const rateLimitResult = await checkRateLimit(ip, visitorId, '/api/reports/detect', inputHash);
-
-      if (rateLimitResult.blocked) {
-        await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 429, errorCode: 'RATE_LIMITED', errorMessage: rateLimitResult.message || '', rateLimited: true });
-        return reply.status(429).send(buildErrorResponse('RATE_LIMITED', rateLimitResult.message || '', undefined, undefined, new Date(Date.now() + (rateLimitResult.retryAfter || 3600) * 1000).toISOString()));
-      }
-
-      if (rateLimitResult.requiresCaptcha) {
-        if (!result.data.captcha_token) {
-          await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 403, errorCode: 'CAPTCHA_REQUIRED', errorMessage: rateLimitResult.message || '', captchaRequired: true });
-          return reply.status(403).send(buildErrorResponse('CAPTCHA_REQUIRED', rateLimitResult.message || '', undefined, 'turnstile'));
-        }
-
-        const captchaResult = await verifyCaptcha(result.data.captcha_token);
-        if (!captchaResult.success) {
-          await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 403, errorCode: 'CAPTCHA_FAILED', errorMessage: captchaResult.reason || '验证码校验失败' });
-          return reply.status(403).send(buildErrorResponse('CAPTCHA_FAILED', captchaResult.reason || '验证码校验失败'));
-        }
-
-        await setCaptchaExempt(visitorId);
-      }
-
-      await incrementRateLimit(ip, visitorId, '/api/reports/detect', inputHash);
-
-      const cachedReport = await getReportCache(inputHash);
-      if (cachedReport) {
-        reportStore.set(cachedReport.report_id, cachedReport);
-        reportInputHashes.set(cachedReport.report_id, inputHash);
-        await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 200, aiCalled: false });
-        return reply.send(cachedReport);
-      }
-
-      const startTime = Date.now();
-      const llmResult = await llmProvider.analyzeJobRisk({
-        source_platform: result.data.source_platform,
-        company_name: result.data.company_name,
-        job_title: result.data.job_title,
-        jd_text: result.data.jd_text,
-        hr_chat_text: result.data.hr_chat_text,
-      });
-      const latencyMs = Date.now() - startTime;
-
-      const validatedReport = (llmResult.parsedJson as RiskReport);
-      validatedReport.report_id = generateReportId();
-      validatedReport.created_at = new Date().toISOString();
-
-      if (isDbAvailable()) {
-        try {
-          await prisma.jobReport.create({
-            data: {
-              report_id: validatedReport.report_id,
-              source_platform: result.data.source_platform,
-              company_name: result.data.company_name,
-              job_title: result.data.job_title,
-              jd_text: result.data.jd_text,
-              hr_chat_text: result.data.hr_chat_text,
-              input_hash: inputHash,
-              visitor_id: visitorId,
-              ip_address: ip,
-              overall_score: validatedReport.overall_score,
-              risk_level: validatedReport.risk_level,
-              confidence: validatedReport.confidence,
-              predicted_role: validatedReport.predicted_role,
-              risk_types: validatedReport.risk_types,
-              sub_scores: JSON.parse(JSON.stringify(validatedReport.sub_scores)) as any,
-              strong_risk_adjustment: validatedReport.strong_risk_adjustment,
-              evidence: validatedReport.evidence,
-              missing_info: validatedReport.missing_info,
-              questions: validatedReport.questions,
-              recommendation: validatedReport.recommendation,
-              disclaimer: validatedReport.disclaimer,
-              analysis_status: 'completed',
-              provider: llmResult.provider,
-              model: llmResult.model,
-              latency_ms: latencyMs,
-              input_tokens: llmResult.inputTokens,
-              output_tokens: llmResult.outputTokens,
-              cost_estimate: llmResult.costEstimate,
-            },
-          });
-        } catch {
-          // ignore database error
-        }
-      }
-
-      await setReportCache(inputHash, validatedReport);
-      reportStore.set(validatedReport.report_id, validatedReport);
-      reportInputHashes.set(validatedReport.report_id, inputHash);
-
-      try {
-        await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 200, aiCalled: true, provider: llmResult.provider, model: llmResult.model, inputTokens: llmResult.inputTokens, outputTokens: llmResult.outputTokens, latencyMs, costEstimate: llmResult.costEstimate });
-      } catch {
-        // ignore log error
-      }
-
-      return reply.send(validatedReport);
-    } catch (err) {
-      try {
-        await logApiRequest({ requestId, apiPath: '/api/reports/detect', method: 'POST', visitorId, ip, userAgent, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: err instanceof Error ? err.message : '内部错误' });
-      } catch {
-        // ignore log error
-      }
-      return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));
+  app.addHook('preHandler', async (request, reply) => {
+    if (request.method !== 'POST' && request.method !== 'DELETE') return;
+    const production = process.env.NODE_ENV === 'production';
+    const databaseRequired = process.env.REQUIRE_DATABASE
+      ? process.env.REQUIRE_DATABASE === 'true'
+      : production;
+    const redisRequired = process.env.REQUIRE_REDIS
+      ? process.env.REQUIRE_REDIS === 'true'
+      : production;
+    if ((databaseRequired && !isDbAvailable()) || (redisRequired && !isRedisAvailable())) {
+      return reply.status(503).send(buildErrorResponse(
+        'DEPENDENCY_UNAVAILABLE',
+        '服务依赖暂时不可用，请稍后重试。'
+      ));
     }
   });
 
-  app.get('/api/reports/:id', async (request: FastifyRequest, reply: FastifyReply) => {
-    const requestId = generateRequestId();
-    const visitorId = request.headers['x-visitor-id'] as string;
-    const ip = request.ip;
-    const params = request.params as { id: string };
+  app.post('/api/reports/detect', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const requestId = generateId('req');
+    const apiPath = '/api/reports/detect';
+    const parsed = DetectRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 400, errorCode: 'VALIDATION_ERROR', errorMessage: '参数格式错误' });
+      return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误', parsed.error.errors.map(error => ({ field: error.path.join('.'), issue: error.message }))));
+    }
+    if (await rejectSensitiveData({
+      values: [
+        parsed.data.source_platform,
+        parsed.data.company_name,
+        parsed.data.job_title,
+        parsed.data.jd_text,
+        parsed.data.hr_chat_text,
+      ],
+      request, reply, requestId, visitorId, apiPath,
+    })) return;
+    const totalLength = parsed.data.jd_text.length + (parsed.data.hr_chat_text?.length || 0);
+    if (totalLength > 12_000) return reply.status(413).send(buildErrorResponse('PAYLOAD_TOO_LARGE', '文本总长度超过限制，请删减内容后重试。'));
+
+    const inputHash = calculateInputHash(parsed.data, visitorId);
+    if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
+    const cached = await getReportCache(inputHash, visitorId);
+    if (cached) {
+      storeReport(cached, visitorId, inputHash);
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 200, aiCalled: false });
+      return reply.send(cached);
+    }
 
     try {
-      // Try memory store first (fast path, always works)
-      const memReport = reportStore.get(params.id);
-      if (memReport) {
-        return reply.send(memReport);
-      }
+      const startedAt = Date.now();
+      const llmResult = await llmProvider.analyzeJobRisk(parsed.data);
+      const report = llmResult.parsedJson as RiskReport;
+      report.report_id = generateId('rep');
+      report.created_at = new Date().toISOString();
+      const now = new Date();
 
-      // Try database
       if (isDbAvailable()) {
-        const report = await prisma.jobReport.findUnique({
-          where: { report_id: params.id, is_deleted: false },
-        });
-
-        if (report) {
-          return reply.send({
+        await runDbOperation(() => prisma.jobReport.create({
+          data: {
             report_id: report.report_id,
+            source_platform: parsed.data.source_platform,
+            company_name: parsed.data.company_name,
+            job_title: parsed.data.job_title,
+            jd_text: parsed.data.jd_text,
+            hr_chat_text: parsed.data.hr_chat_text,
+            input_hash: inputHash,
+            visitor_id: visitorId,
+            ip_address: request.ip,
             overall_score: report.overall_score,
             risk_level: report.risk_level,
             confidence: report.confidence,
             predicted_role: report.predicted_role,
-            risk_types: report.risk_types as string[],
-            sub_scores: JSON.parse(JSON.stringify(report.sub_scores)) as RiskReport['sub_scores'],
+            risk_types: report.risk_types,
+            sub_scores: JSON.parse(JSON.stringify(report.sub_scores)),
             strong_risk_adjustment: report.strong_risk_adjustment,
-            evidence: report.evidence as string[],
-            missing_info: report.missing_info as string[],
-            questions: report.questions as string[],
+            evidence: report.evidence,
+            missing_info: report.missing_info,
+            questions: report.questions,
             recommendation: report.recommendation,
             disclaimer: report.disclaimer,
-            created_at: report.created_at.toISOString(),
-          });
-        }
+            analysis_status: 'completed',
+            provider: llmResult.provider,
+            model: llmResult.model,
+            latency_ms: Date.now() - startedAt,
+            input_tokens: llmResult.inputTokens,
+            output_tokens: llmResult.outputTokens,
+            cost_estimate: llmResult.costEstimate,
+            source_retention_until: new Date(now.getTime() + 7 * DAY_MS),
+            retention_until: new Date(now.getTime() + REPORT_TTL_MS),
+          },
+        }));
       }
-
-      await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}`, method: 'GET', visitorId, ip, httpStatus: 404, errorCode: 'REPORT_NOT_FOUND', errorMessage: '报告不存在' });
-      return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
-    } catch (err) {
-      await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}`, method: 'GET', visitorId, ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: err instanceof Error ? err.message : '内部错误' });
+      await setReportCache(inputHash, report, visitorId);
+      storeReport(report, visitorId, inputHash);
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: true, provider: llmResult.provider, model: llmResult.model });
+      return reply.send(report);
+    } catch (error) {
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: '报告生成失败' });
+      logInternalFailure(request, 'report_generation', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));
     }
   });
 
-  app.delete('/api/reports/:id', async (request: FastifyRequest, reply: FastifyReply) => {
-    const requestId = generateRequestId();
-    const visitorId = request.headers['x-visitor-id'] as string;
-    const ip = request.ip;
-    const params = request.params as { id: string };
-
+  app.get('/api/reports/:id', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const reportId = (request.params as { id: string }).id;
     try {
-      const memReport = reportStore.get(params.id);
-      if (memReport && !isDbAvailable()) {
-        await deleteMemoryReport(params.id);
-        return reply.send({
-          status: 'deleted',
-          message: '该报告及相关数据已删除。',
-          deleted_at: new Date().toISOString(),
-        });
-      }
+      const owned = await findOwnedReport(reportId, visitorId);
+      if (!owned) return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
+      return reply.send(owned.report);
+    } catch (error) {
+      logInternalFailure(request, 'report_lookup', error);
+      return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));
+    }
+  });
 
-      if (!isDbAvailable()) {
-        await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}`, method: 'DELETE', visitorId, ip, httpStatus: 404, errorCode: 'REPORT_NOT_FOUND', errorMessage: '报告不存在' });
-        return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在。'));
-      }
-
-      const report = await prisma.jobReport.findUnique({
-        where: { report_id: params.id },
-      });
-
-      if (!report) {
-        if (memReport) {
-          await deleteMemoryReport(params.id);
-          return reply.send({
-            status: 'deleted',
-            message: '该报告及相关数据已删除。',
-            deleted_at: new Date().toISOString(),
+  app.delete('/api/reports/:id', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const reportId = (request.params as { id: string }).id;
+    const requestId = generateId('req');
+    const apiPath = '/api/reports/:id';
+    const deleteRequest = CaptchaRequestSchema.safeParse(request.body || {});
+    if (!deleteRequest.success) return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
+    const inputHash = calculateWriteHash(visitorId, apiPath, { reportId });
+    if (!await enforceWriteProtection({
+      request, reply, requestId, visitorId, apiPath,
+      captchaToken: deleteRequest.data.captcha_token,
+      inputHash,
+    })) return;
+    const owned = await findOwnedReport(reportId, visitorId);
+    if (!owned) return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
+    const deletedAt = new Date();
+    try {
+      if (isDbAvailable()) {
+        const result = await runDbOperation(() => prisma.$transaction(async tx => {
+          const report = await tx.jobReport.updateMany({
+            where: { report_id: reportId, visitor_id: visitorId, is_deleted: false },
+            data: { is_deleted: true, deleted_at: deletedAt },
           });
-        }
-        await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}`, method: 'DELETE', visitorId, ip, httpStatus: 404, errorCode: 'REPORT_NOT_FOUND', errorMessage: '报告不存在' });
-        return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在。'));
+          if (report.count !== 1) return false;
+          await tx.hrAnalysis.updateMany({
+            where: { report_id: reportId, visitor_id: visitorId, is_deleted: false },
+            data: { is_deleted: true, deleted_at: deletedAt },
+          });
+          await tx.reportFeedback.updateMany({
+            where: { report_id: reportId, visitor_id: visitorId, is_deleted: false },
+            data: { is_deleted: true, deleted_at: deletedAt },
+          });
+          await tx.interviewFeedback.updateMany({
+            where: { report_id: reportId, visitor_id: visitorId, is_deleted: false },
+            data: { is_deleted: true, deleted_at: deletedAt },
+          });
+          return true;
+        }));
+        if (!result) return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
       }
-
-      await prisma.jobReport.update({
-        where: { report_id: params.id },
-        data: { is_deleted: true, deleted_at: new Date() },
-      });
-
-      await deleteMemoryReport(params.id);
-      await delReportCache(report.input_hash);
-
-      await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}`, method: 'DELETE', visitorId, ip, httpStatus: 200 });
-
-      return reply.send({
-        status: 'deleted',
-        message: '该报告及相关数据已删除。',
-        deleted_at: new Date().toISOString(),
-      });
-    } catch (err) {
-      await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}`, method: 'DELETE', visitorId, ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: err instanceof Error ? err.message : '内部错误' });
+      await deleteMemoryReport(reportId, visitorId, owned.inputHash);
+      return reply.send({ status: 'deleted', message: '该报告及相关数据已删除。', deleted_at: deletedAt.toISOString() });
+    } catch (error) {
+      logInternalFailure(request, 'report_deletion', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '删除失败，请稍后重试。'));
     }
   });
 
-  app.post('/api/reports/:id/hr-analysis', async (request: FastifyRequest, reply: FastifyReply) => {
-    const requestId = generateRequestId();
-    const visitorId = request.headers['x-visitor-id'] as string;
-    const ip = request.ip;
-    const params = request.params as { id: string };
+  app.post('/api/reports/:id/hr-analysis', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const reportId = (request.params as { id: string }).id;
+    const requestId = generateId('req');
+    const apiPath = '/api/reports/:id/hr-analysis';
+    const parsed = HrAnalysisRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
+    const owned = await findOwnedReport(reportId, visitorId);
+    if (!owned) return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
+    if (await rejectSensitiveData({ values: [parsed.data.user_question, parsed.data.hr_reply, parsed.data.jd_context], request, reply, requestId, visitorId, apiPath })) return;
+    const inputHash = calculateWriteHash(visitorId, apiPath, parsed.data);
+    if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
 
     try {
-      const result = HrAnalysisRequestSchema.safeParse(request.body);
-      if (!result.success) {
-        await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}/hr-analysis`, method: 'POST', visitorId, ip, httpStatus: 400, errorCode: 'VALIDATION_ERROR', errorMessage: '参数格式错误' });
-        return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
-      }
-
-      const llmResult = await llmProvider.analyzeHrReply({
-        report_id: params.id,
-        user_question: result.data.user_question,
-        hr_reply: result.data.hr_reply,
-        jd_context: result.data.jd_context,
-      });
-
-      const validatedAnalysis = (llmResult.parsedJson as HrAnalysis);
-      validatedAnalysis.hr_analysis_id = generateHrAnalysisId();
-      validatedAnalysis.created_at = new Date().toISOString();
-
+      const llmResult = await llmProvider.analyzeHrReply({ ...parsed.data, report_id: reportId });
+      const analysis = llmResult.parsedJson as HrAnalysis;
+      analysis.hr_analysis_id = generateId('hra');
+      analysis.report_id = reportId;
+      analysis.created_at = new Date().toISOString();
       if (isDbAvailable()) {
-        await prisma.hrAnalysis.create({
-          data: {
-          hr_analysis_id: validatedAnalysis.hr_analysis_id,
-          report_id: params.id,
-          user_question: result.data.user_question,
-          hr_reply: result.data.hr_reply,
-          jd_context: result.data.jd_context,
+        await runDbOperation(() => prisma.hrAnalysis.create({ data: {
+          hr_analysis_id: analysis.hr_analysis_id,
+          report_id: reportId,
+          user_question: parsed.data.user_question,
+          hr_reply: parsed.data.hr_reply,
+          jd_context: parsed.data.jd_context,
           visitor_id: visitorId,
-          ip_address: ip,
-          avoidance_score: validatedAnalysis.avoidance_score,
-          risk_level: validatedAnalysis.risk_level,
-          analysis: validatedAnalysis.analysis,
-          next_questions: validatedAnalysis.next_questions,
+          ip_address: request.ip,
+          avoidance_score: analysis.avoidance_score,
+          risk_level: analysis.risk_level,
+          analysis: analysis.analysis,
+          next_questions: analysis.next_questions,
           analysis_status: 'completed',
           provider: llmResult.provider,
           model: llmResult.model,
-          },
-        });
-      } else {
-        hrAnalysisStore.set(validatedAnalysis.hr_analysis_id, validatedAnalysis);
+          retention_until: new Date(Date.now() + REPORT_TTL_MS),
+        } }));
       }
-
-      await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}/hr-analysis`, method: 'POST', visitorId, ip, httpStatus: 200, aiCalled: true, provider: llmResult.provider, model: llmResult.model });
-
-      return reply.send(validatedAnalysis);
-    } catch (err) {
-      await logApiRequest({ requestId, apiPath: `/api/reports/${params.id}/hr-analysis`, method: 'POST', visitorId, ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: err instanceof Error ? err.message : '内部错误' });
+      setBoundedEntry(hrAnalysisStore, analysis.hr_analysis_id, { value: analysis, ownerId: visitorId, reportId, expiresAt: Date.now() + REPORT_TTL_MS }, HR_ANALYSIS_STORE_MAX);
+      return reply.send(analysis);
+    } catch (error) {
+      logInternalFailure(request, 'linked_hr_analysis', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));
     }
   });
 
-  app.post('/api/hr-analysis', async (request: FastifyRequest, reply: FastifyReply) => {
-    const requestId = generateRequestId();
-    const visitorId = request.headers['x-visitor-id'] as string;
-    const ip = request.ip;
+  app.post('/api/hr-analysis', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const requestId = generateId('req');
+    const apiPath = '/api/hr-analysis';
+    const parsed = HrAnalysisRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
+    if (parsed.data.report_id && !await findOwnedReport(parsed.data.report_id, visitorId)) {
+      return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
+    }
+    if (await rejectSensitiveData({ values: [parsed.data.user_question, parsed.data.hr_reply, parsed.data.jd_context], request, reply, requestId, visitorId, apiPath })) return;
+    const inputHash = calculateWriteHash(visitorId, apiPath, parsed.data);
+    if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
 
     try {
-      const result = HrAnalysisRequestSchema.safeParse(request.body);
-      if (!result.success) {
-        await logApiRequest({ requestId, apiPath: '/api/hr-analysis', method: 'POST', visitorId, ip, httpStatus: 400, errorCode: 'VALIDATION_ERROR', errorMessage: '参数格式错误' });
-        return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
-      }
-
-      const llmResult = await llmProvider.analyzeHrReply({
-        user_question: result.data.user_question,
-        hr_reply: result.data.hr_reply,
-        jd_context: result.data.jd_context,
-      });
-
-      const validatedAnalysis = (llmResult.parsedJson as HrAnalysis);
-      validatedAnalysis.hr_analysis_id = generateHrAnalysisId();
-      validatedAnalysis.created_at = new Date().toISOString();
-
+      const llmResult = await llmProvider.analyzeHrReply(parsed.data);
+      const analysis = llmResult.parsedJson as HrAnalysis;
+      analysis.hr_analysis_id = generateId('hra');
+      analysis.report_id = parsed.data.report_id;
+      analysis.created_at = new Date().toISOString();
       if (isDbAvailable()) {
-        await prisma.hrAnalysis.create({
-          data: {
-          hr_analysis_id: validatedAnalysis.hr_analysis_id,
-          user_question: result.data.user_question,
-          hr_reply: result.data.hr_reply,
-          jd_context: result.data.jd_context,
+        await runDbOperation(() => prisma.hrAnalysis.create({ data: {
+          hr_analysis_id: analysis.hr_analysis_id,
+          report_id: parsed.data.report_id,
+          user_question: parsed.data.user_question,
+          hr_reply: parsed.data.hr_reply,
+          jd_context: parsed.data.jd_context,
           visitor_id: visitorId,
-          ip_address: ip,
-          avoidance_score: validatedAnalysis.avoidance_score,
-          risk_level: validatedAnalysis.risk_level,
-          analysis: validatedAnalysis.analysis,
-          next_questions: validatedAnalysis.next_questions,
+          ip_address: request.ip,
+          avoidance_score: analysis.avoidance_score,
+          risk_level: analysis.risk_level,
+          analysis: analysis.analysis,
+          next_questions: analysis.next_questions,
           analysis_status: 'completed',
           provider: llmResult.provider,
           model: llmResult.model,
-          },
-        });
-      } else {
-        hrAnalysisStore.set(validatedAnalysis.hr_analysis_id, validatedAnalysis);
+          retention_until: new Date(Date.now() + REPORT_TTL_MS),
+        } }));
       }
-
-      await logApiRequest({ requestId, apiPath: '/api/hr-analysis', method: 'POST', visitorId, ip, httpStatus: 200, aiCalled: true, provider: llmResult.provider, model: llmResult.model });
-
-      return reply.send(validatedAnalysis);
-    } catch (err) {
-      await logApiRequest({ requestId, apiPath: '/api/hr-analysis', method: 'POST', visitorId, ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: err instanceof Error ? err.message : '内部错误' });
+      setBoundedEntry(hrAnalysisStore, analysis.hr_analysis_id, { value: analysis, ownerId: visitorId, reportId: parsed.data.report_id, expiresAt: Date.now() + REPORT_TTL_MS }, HR_ANALYSIS_STORE_MAX);
+      return reply.send(analysis);
+    } catch (error) {
+      logInternalFailure(request, 'standalone_hr_analysis', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));
     }
   });
 
-  app.post('/api/interview-feedbacks', async (request: FastifyRequest, reply: FastifyReply) => {
-    const requestId = generateRequestId();
-    const visitorId = request.headers['x-visitor-id'] as string;
-    const ip = request.ip;
-
+  app.post('/api/interview-feedbacks', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const requestId = generateId('req');
+    const apiPath = '/api/interview-feedbacks';
+    const parsed = InterviewFeedbackRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
+    if (parsed.data.report_id && !await findOwnedReport(parsed.data.report_id, visitorId)) {
+      return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
+    }
+    if (await rejectSensitiveData({
+      values: [
+        parsed.data.company_name,
+        parsed.data.job_title,
+        parsed.data.source_platform,
+        parsed.data.jd_claim,
+        parsed.data.interview_actual,
+      ],
+      request, reply, requestId, visitorId, apiPath,
+    })) return;
+    const inputHash = calculateWriteHash(visitorId, apiPath, parsed.data);
+    if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
+    const feedbackId = generateId('fb');
     try {
-      const result = InterviewFeedbackRequestSchema.safeParse(request.body);
-      if (!result.success) {
-        await logApiRequest({ requestId, apiPath: '/api/interview-feedbacks', method: 'POST', visitorId, ip, httpStatus: 400, errorCode: 'VALIDATION_ERROR', errorMessage: '参数格式错误' });
-        return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
-      }
-
-      const feedbackId = generateFeedbackId();
-
       if (isDbAvailable()) {
-        await prisma.interviewFeedback.create({
-          data: {
+        await runDbOperation(() => prisma.interviewFeedback.create({ data: {
           feedback_id: feedbackId,
-          report_id: result.data.report_id,
-          company_name: result.data.company_name,
-          job_title: result.data.job_title,
-          source_platform: result.data.source_platform,
-          jd_claim: result.data.jd_claim,
-          interview_actual: result.data.interview_actual,
-          involves_sales: result.data.involves_sales,
-          involves_fee: result.data.involves_fee,
-          involves_training_loan: result.data.involves_training_loan,
-          involves_deposit: result.data.involves_deposit,
-          subject_mismatch: result.data.subject_mismatch,
-          recommend_to_others: result.data.recommend_to_others,
+          report_id: parsed.data.report_id,
+          company_name: parsed.data.company_name,
+          job_title: parsed.data.job_title,
+          source_platform: parsed.data.source_platform,
+          jd_claim: parsed.data.jd_claim,
+          interview_actual: parsed.data.interview_actual,
+          involves_sales: parsed.data.involves_sales,
+          involves_fee: parsed.data.involves_fee,
+          involves_training_loan: parsed.data.involves_training_loan,
+          involves_deposit: parsed.data.involves_deposit,
+          subject_mismatch: parsed.data.subject_mismatch,
+          recommend_to_others: parsed.data.recommend_to_others,
           visitor_id: visitorId,
-          ip_address: ip,
-          },
-        });
-      } else {
-        interviewFeedbackStore.set(feedbackId, result.data);
+          ip_address: request.ip,
+          retention_until: new Date(Date.now() + FEEDBACK_TTL_MS),
+        } }));
       }
-
-      await logApiRequest({ requestId, apiPath: '/api/interview-feedbacks', method: 'POST', visitorId, ip, httpStatus: 200 });
-
-      return reply.send({
-        feedback_id: feedbackId,
-        status: 'submitted',
-        message: '已匿名提交，审核后将用于优化岗位风险判断。',
-        created_at: new Date().toISOString(),
-      });
-    } catch (err) {
-      await logApiRequest({ requestId, apiPath: '/api/interview-feedbacks', method: 'POST', visitorId, ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: err instanceof Error ? err.message : '内部错误' });
+      setBoundedEntry(interviewFeedbackStore, feedbackId, { value: parsed.data, ownerId: visitorId, reportId: parsed.data.report_id, expiresAt: Date.now() + FEEDBACK_TTL_MS }, FEEDBACK_STORE_MAX);
+      return reply.send({ feedback_id: feedbackId, status: 'submitted', message: '已匿名提交，审核后将用于优化岗位风险判断。', created_at: new Date().toISOString() });
+    } catch (error) {
+      logInternalFailure(request, 'interview_feedback_submission', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '提交失败，请稍后重试。'));
     }
   });
 
-  app.post('/api/report-feedbacks', async (request: FastifyRequest, reply: FastifyReply) => {
-    const requestId = generateRequestId();
-    const visitorId = request.headers['x-visitor-id'] as string;
-    const ip = request.ip;
-
+  app.post('/api/report-feedbacks', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const requestId = generateId('req');
+    const apiPath = '/api/report-feedbacks';
+    const parsed = ReportFeedbackRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
+    if (!await findOwnedReport(parsed.data.report_id, visitorId)) {
+      return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
+    }
+    if (await rejectSensitiveData({ values: [parsed.data.content], request, reply, requestId, visitorId, apiPath })) return;
+    const inputHash = calculateWriteHash(visitorId, apiPath, parsed.data);
+    if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
+    const feedbackId = generateId('rfb');
     try {
-      const result = ReportFeedbackRequestSchema.safeParse(request.body);
-      if (!result.success) {
-        await logApiRequest({ requestId, apiPath: '/api/report-feedbacks', method: 'POST', visitorId, ip, httpStatus: 400, errorCode: 'VALIDATION_ERROR', errorMessage: '参数格式错误' });
-        return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
-      }
-
-      const feedbackId = generateReportFeedbackId();
-
       if (isDbAvailable()) {
-        await prisma.reportFeedback.create({
-          data: {
+        await runDbOperation(() => prisma.reportFeedback.create({ data: {
           feedback_id: feedbackId,
-          report_id: result.data.report_id,
-          feedback_type: result.data.feedback_type,
-          content: result.data.content,
+          report_id: parsed.data.report_id,
+          feedback_type: parsed.data.feedback_type,
+          content: parsed.data.content,
           visitor_id: visitorId,
-          ip_address: ip,
-          },
-        });
-      } else {
-        reportFeedbackStore.set(feedbackId, result.data);
+          ip_address: request.ip,
+          retention_until: new Date(Date.now() + FEEDBACK_TTL_MS),
+        } }));
       }
-
-      await logApiRequest({ requestId, apiPath: '/api/report-feedbacks', method: 'POST', visitorId, ip, httpStatus: 200 });
-
-      return reply.send({
-        feedback_id: feedbackId,
-        status: 'submitted',
-        message: '已收到反馈，我们会用于优化模型。',
-        created_at: new Date().toISOString(),
-      });
-    } catch (err) {
-      await logApiRequest({ requestId, apiPath: '/api/report-feedbacks', method: 'POST', visitorId, ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: err instanceof Error ? err.message : '内部错误' });
+      setBoundedEntry(reportFeedbackStore, feedbackId, { value: parsed.data, ownerId: visitorId, reportId: parsed.data.report_id, expiresAt: Date.now() + FEEDBACK_TTL_MS }, FEEDBACK_STORE_MAX);
+      return reply.send({ feedback_id: feedbackId, status: 'submitted', message: '已收到反馈，我们会用于优化模型。', created_at: new Date().toISOString() });
+    } catch (error) {
+      logInternalFailure(request, 'report_feedback_submission', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '提交失败，请稍后重试。'));
     }
   });
+
+  app.delete('/api/visitor-data', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const requestId = generateId('req');
+    const apiPath = '/api/visitor-data';
+    const deleteRequest = CaptchaRequestSchema.safeParse(request.body || {});
+    if (!deleteRequest.success) return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '参数格式错误'));
+    if (!await enforceWriteProtection({
+      request, reply, requestId, visitorId, apiPath,
+      captchaToken: deleteRequest.data.captcha_token,
+      inputHash: calculateWriteHash(visitorId, apiPath, {}),
+    })) return;
+    const deletedAt = new Date();
+    const memoryReportIds = [...reportStore.entries()]
+      .filter(([, entry]) => entry.ownerId === visitorId)
+      .map(([reportId]) => reportId);
+    let deleted: VisitorDataDeleteResult['deleted'] = {
+      reports: 0,
+      hr_analyses: 0,
+      interview_feedbacks: 0,
+      report_feedbacks: 0,
+    };
+
+    try {
+      let reportIds = memoryReportIds;
+      let reportHashes: Array<{ report_id: string; input_hash: string }> = [];
+      if (isDbAvailable()) {
+        reportHashes = await runDbOperation(() => prisma.jobReport.findMany({
+          where: { visitor_id: visitorId, is_deleted: false },
+          select: { report_id: true, input_hash: true },
+        }));
+        reportIds = [...new Set([...reportIds, ...reportHashes.map(report => report.report_id)])];
+        deleted = await runDbOperation(() => prisma.$transaction(async tx => {
+          const reports = await tx.jobReport.updateMany({
+            where: { visitor_id: visitorId, is_deleted: false },
+            data: { is_deleted: true, deleted_at: deletedAt },
+          });
+          const hrAnalyses = await tx.hrAnalysis.updateMany({
+            where: {
+              is_deleted: false,
+              OR: [
+                { visitor_id: visitorId },
+                ...(reportIds.length > 0 ? [{ report_id: { in: reportIds } }] : []),
+              ],
+            },
+            data: { is_deleted: true, deleted_at: deletedAt },
+          });
+          const interviewFeedbacks = await tx.interviewFeedback.updateMany({
+            where: { visitor_id: visitorId, is_deleted: false },
+            data: { is_deleted: true, deleted_at: deletedAt },
+          });
+          const reportFeedbacks = await tx.reportFeedback.updateMany({
+            where: {
+              is_deleted: false,
+              OR: [
+                { visitor_id: visitorId },
+                ...(reportIds.length > 0 ? [{ report_id: { in: reportIds } }] : []),
+              ],
+            },
+            data: { is_deleted: true, deleted_at: deletedAt },
+          });
+          await tx.apiLog.updateMany({
+            where: { visitor_id: visitorId },
+            data: { visitor_id: null, ip_address: null, user_agent: null },
+          });
+          await tx.securityEvent.updateMany({
+            where: { visitor_id: visitorId },
+            data: { visitor_id: null, ip_address: null, user_agent: null },
+          });
+          return {
+            reports: reports.count,
+            hr_analyses: hrAnalyses.count,
+            interview_feedbacks: interviewFeedbacks.count,
+            report_feedbacks: reportFeedbacks.count,
+          };
+        }));
+      } else {
+        deleted.reports = memoryReportIds.length;
+        deleted.hr_analyses = [...hrAnalysisStore.values()].filter(entry => entry.ownerId === visitorId).length;
+        deleted.interview_feedbacks = [...interviewFeedbackStore.values()].filter(entry => entry.ownerId === visitorId).length;
+        deleted.report_feedbacks = [...reportFeedbackStore.values()].filter(entry => entry.ownerId === visitorId).length;
+      }
+
+      for (const reportId of reportIds) {
+        const hash = reportHashes.find(report => report.report_id === reportId)?.input_hash;
+        await deleteMemoryReport(reportId, visitorId, hash);
+      }
+      for (const [id, entry] of hrAnalysisStore) if (entry.ownerId === visitorId) hrAnalysisStore.delete(id);
+      for (const [id, entry] of interviewFeedbackStore) if (entry.ownerId === visitorId) interviewFeedbackStore.delete(id);
+      for (const [id, entry] of reportFeedbackStore) if (entry.ownerId === visitorId) reportFeedbackStore.delete(id);
+
+      const response: VisitorDataDeleteResult = {
+        status: 'deleted',
+        message: '当前匿名访问标识关联的数据已删除。',
+        deleted_at: deletedAt.toISOString(),
+        deleted,
+      };
+      return reply.send(response);
+    } catch (error) {
+      logInternalFailure(request, 'visitor_data_deletion', error);
+      return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '删除失败，请稍后重试。'));
+    }
+  });
+
+  const stopDataRetentionScheduler = startDataRetentionScheduler(async reportIds => {
+    for (const reportId of reportIds) await deleteMemoryReport(reportId);
+  });
+  app.addHook('onClose', async () => stopDataRetentionScheduler());
 }

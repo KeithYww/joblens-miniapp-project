@@ -2,7 +2,8 @@ import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, ShieldCheck, FileText, MessageSquare } from 'lucide-react';
 import { TextInputPanel } from '@/components';
-import { api } from '@/api';
+import { TurnstileChallenge } from '@/components/TurnstileChallenge';
+import { api, ApiRequestError } from '@/api';
 import type { DetectRequest } from '@/types';
 
 export function HomePage() {
@@ -14,6 +15,9 @@ export function HomePage() {
   const [hrChatText, setHrChatText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [captchaRequired, setCaptchaRequired] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
 
   const handleSubmit = useCallback(async () => {
     if (!jdText.trim()) {
@@ -35,20 +39,28 @@ export function HomePage() {
       job_title: jobTitle || undefined,
       jd_text: jdText,
       hr_chat_text: hrChatText || undefined,
+      captcha_token: captchaToken || undefined,
     };
 
     try {
       const report = await api.reports.detect(data);
       navigate(`/report/${report.report_id}`);
     } catch (err: unknown) {
-      console.error('Detect error:', err);
-      const errorObj = err as { message?: string };
-      const errorMsg = errorObj?.message || '检测失败，请稍后重试';
-      setError(errorMsg);
+      if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
+        setCaptchaRequired(true);
+        setError('请求较频繁，请完成验证后再次检测。');
+      } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_FAILED') {
+        setCaptchaRequired(true);
+        setCaptchaToken('');
+        setCaptchaResetSignal(value => value + 1);
+        setError('验证已失效，请重新完成验证。');
+      } else {
+        setError(err instanceof Error ? err.message : '检测失败，请稍后重试');
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, navigate]);
+  }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, captchaToken, navigate]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-warning-50">
@@ -155,9 +167,17 @@ export function HomePage() {
             </div>
           )}
 
+          {captchaRequired && (
+            <TurnstileChallenge
+              onVerify={setCaptchaToken}
+              onError={() => setError('验证加载失败，请刷新页面后重试。')}
+              resetSignal={captchaResetSignal}
+            />
+          )}
+
           <button
             onClick={handleSubmit}
-            disabled={isLoading}
+            disabled={isLoading || (captchaRequired && !captchaToken)}
             className="w-full py-4 rounded-xl font-semibold gradient-primary text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:shadow-lg"
           >
             {isLoading ? (

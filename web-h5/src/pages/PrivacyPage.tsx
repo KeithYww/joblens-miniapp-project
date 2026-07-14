@@ -1,7 +1,40 @@
-import { ArrowLeft } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowLeft, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { api, ApiRequestError } from '@/api';
+import { TurnstileChallenge } from '@/components/TurnstileChallenge';
 
 export function PrivacyPage() {
+  const [deleteStatus, setDeleteStatus] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [captchaRequired, setCaptchaRequired] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
+
+  const handleDeleteAll = async () => {
+    if (!window.confirm('确定删除当前浏览器标识关联的全部数据？此操作无法撤销。')) return;
+    setIsDeleting(true);
+    setDeleteStatus('');
+    try {
+      const result = await api.visitorData.deleteAll(captchaToken || undefined);
+      setDeleteStatus(result.message);
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
+        setCaptchaRequired(true);
+        setDeleteStatus('删除请求较频繁，请完成验证后重试。');
+      } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_FAILED') {
+        setCaptchaRequired(true);
+        setCaptchaToken('');
+        setCaptchaResetSignal(value => value + 1);
+        setDeleteStatus('验证已失效，请重新完成验证。');
+      } else {
+        setDeleteStatus(err instanceof Error ? err.message : '删除失败，请稍后重试。');
+      }
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white/80 backdrop-blur-sm border-b border-gray-100 sticky top-0 z-50">
@@ -56,6 +89,24 @@ export function PrivacyPage() {
               <li>在隐私页点击"一键删除所有数据"删除所有数据</li>
               <li>删除后 30 天内物理删除所有相关数据</li>
             </ul>
+            <button
+              type="button"
+              onClick={handleDeleteAll}
+              disabled={isDeleting || (captchaRequired && !captchaToken)}
+              className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-danger-200 text-danger-700 hover:bg-danger-50 disabled:opacity-50"
+            >
+              <Trash2 className="w-4 h-4" />
+              {isDeleting ? '删除中...' : '删除我的全部数据'}
+            </button>
+            {deleteStatus && <p className="mt-3 text-sm text-gray-600">{deleteStatus}</p>}
+            {captchaRequired && (
+              <div className="mt-4">
+                <TurnstileChallenge
+                  onVerify={setCaptchaToken}
+                  resetSignal={captchaResetSignal}
+                />
+              </div>
+            )}
           </section>
 
           <section>

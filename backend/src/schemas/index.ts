@@ -4,6 +4,61 @@ const RiskLevelSchema = z.enum(['低', '中', '高', '极高']);
 const ConfidenceSchema = z.enum(['高', '中', '低']);
 const SubScoreStatusSchema = z.enum(['available', 'missing', 'insufficient']);
 
+export const VisitorIdSchema = z.string().regex(
+  /^visitor_(?:[a-f0-9]{12}|[a-f0-9]{32})$/,
+  'X-Visitor-Id 格式无效'
+);
+
+const MAINLAND_MOBILE_PATTERN = /(^|\D)1[3-9]\d{9}(?!\d)/;
+const ID_CARD_PATTERN = /(^|\D)(\d{17}[\dXx]|\d{15})(?!\d)/g;
+const LONG_NUMBER_PATTERN = /(?:\d[ -]?){15,18}\d/g;
+
+function isValidMainlandIdCard(candidate: string): boolean {
+  if (/^\d{15}$/.test(candidate)) return true;
+  if (!/^\d{17}[\dXx]$/.test(candidate)) return false;
+  const weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+  const checks = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'];
+  const sum = candidate.slice(0, 17).split('').reduce(
+    (total, digit, index) => total + Number(digit) * weights[index],
+    0
+  );
+  return checks[sum % 11] === candidate[17].toUpperCase();
+}
+
+function passesLuhn(candidate: string): boolean {
+  let sum = 0;
+  let doubleDigit = false;
+  for (let index = candidate.length - 1; index >= 0; index -= 1) {
+    let digit = Number(candidate[index]);
+    if (doubleDigit) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+    doubleDigit = !doubleDigit;
+  }
+  return sum % 10 === 0;
+}
+
+export function containsHighSensitiveData(values: Array<string | undefined>): boolean {
+  return values.some(value => {
+    if (!value) return false;
+    if (MAINLAND_MOBILE_PATTERN.test(value)) return true;
+
+    ID_CARD_PATTERN.lastIndex = 0;
+    for (const match of value.matchAll(ID_CARD_PATTERN)) {
+      if (isValidMainlandIdCard(match[2])) return true;
+    }
+
+    LONG_NUMBER_PATTERN.lastIndex = 0;
+    for (const match of value.matchAll(LONG_NUMBER_PATTERN)) {
+      const digits = match[0].replace(/\D/g, '');
+      if (digits.length >= 16 && digits.length <= 19 && passesLuhn(digits)) return true;
+    }
+    return false;
+  });
+}
+
 const SubScoreSchema = z.object({
   score: z.number().min(0).max(100).nullable(),
   weight: z.number().min(0).max(1),
@@ -82,4 +137,8 @@ export const ReportFeedbackRequestSchema = z.object({
   feedback_type: z.enum(['判断不准', '证据不足', '表达不当', '其他']),
   content: z.string().min(10).max(2000),
   captcha_token: z.string().optional(),
+});
+
+export const CaptchaRequestSchema = z.object({
+  captcha_token: z.string().max(2048).optional(),
 });

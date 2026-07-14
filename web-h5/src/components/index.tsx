@@ -287,19 +287,31 @@ export function TextInputPanel({
 
 export function FeedbackForm({
   onSubmit,
+  disabled = false,
 }: {
-  onSubmit: (data: { type: string; content: string }) => void;
+  onSubmit: (data: { type: string; content: string }) => Promise<void>;
+  disabled?: boolean;
 }) {
   const [type, setType] = useState<string>('判断不准');
   const [content, setContent] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!content.trim()) return;
-    onSubmit({ type, content });
-    setSubmitted(true);
-    setContent('');
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      await onSubmit({ type, content });
+      setSubmitted(true);
+      setContent('');
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : '提交失败，请稍后重试。');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (submitted) {
@@ -349,12 +361,15 @@ export function FeedbackForm({
         />
         <div className="text-xs text-gray-400 mt-1">{content.length}/2000 字</div>
       </div>
+      {submitError && (
+        <p className="text-sm text-danger-600 bg-danger-50 rounded-lg p-3">{submitError}</p>
+      )}
       <button
         type="submit"
-        disabled={!content.trim()}
+        disabled={!content.trim() || submitting || disabled}
         className="w-full py-3 rounded-xl font-medium gradient-primary text-white disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
       >
-        提交反馈
+        {submitting ? '提交中...' : '提交反馈'}
       </button>
     </form>
   );

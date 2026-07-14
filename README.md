@@ -86,7 +86,7 @@ joblens-miniapp-project/
 - **图标**: Lucide React
 
 ### 后端 (backend/)
-- **框架**: Fastify 4
+- **框架**: Fastify 5
 - **语言**: TypeScript
 - **数据库**: PostgreSQL + Prisma ORM
 - **缓存**: Redis (可选，支持内存降级)
@@ -126,7 +126,7 @@ npm run dev
 
 在 `backend/.env` 中配置：
 ```bash
-# 可选：siliconflow | qwencloud | rule-based
+# 可选：siliconflow | qwen-cloud | qwencloud | rule-based
 AI_PROVIDER=siliconflow
 
 # SiliconFlow API Key
@@ -146,18 +146,23 @@ QWENCLOUD_API_KEY=your-api-key
    - 登录 https://vercel.com/
    - 点击 "Add New Project"
    - 选择你的 GitHub 仓库
-   - 配置：Framework Preset → React, Build Command → `cd web-h5 && npm install && npm run build`, Output Directory → `web-h5/dist`
+   - 配置：Root Directory → `web-h5`, Framework Preset → Vite, Build Command → `npm ci && npm run build`, Output Directory → `dist`
 
 2. **后端部署到 Render**
    - 登录 https://render.com/
    - 点击 "New → Web Service"
    - 选择你的 GitHub 仓库
-   - 配置：Build Command → `cd backend && npm install && npm run build`, Start Command → `cd backend && npm start`
-   - 添加环境变量：`AI_PROVIDER`, `SILICONFLOW_API_KEY`, `QWENCLOUD_API_KEY`
+   - 配置：Build Command → `cd backend && npm ci && npm run prisma:generate && npm run build`, Start Command → `cd backend && npm start`
+   - 发布前执行：`cd backend && npm run prisma:deploy`
+   - 已有旧版手工建表的数据库，先按 [部署指南](docs/26-deployment-guide.md) 完成 migration baseline
+   - 必填环境变量：`DATABASE_URL`, `REDIS_URL`, `TURNSTILE_SECRET_KEY`, `AI_PROVIDER`
+   - 生产保护：`REQUIRE_DATABASE=true`, `REQUIRE_REDIS=true`, `TRUST_PROXY=1`
+   - 按 Provider 添加：`SILICONFLOW_API_KEY` 或 `QWENCLOUD_API_KEY`
    - 添加 `CORS_ORIGIN=https://your-vercel-project.vercel.app`，多个前端域名使用逗号分隔
 
 3. **配置前端 API 地址**
-   - 在 Vercel 项目设置中添加环境变量 `VITE_API_BASE_URL=https://your-render-service.onrender.com/api`
+   - 在 Vercel 项目设置中添加 `VITE_API_BASE_URL=https://your-render-service.onrender.com/api`
+   - 添加 Cloudflare Turnstile 公钥：`VITE_TURNSTILE_SITE_KEY=your-site-key`
 
 ### 方案二：传统服务器部署（需要购买服务器）
 

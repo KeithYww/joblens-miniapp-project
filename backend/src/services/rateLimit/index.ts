@@ -1,4 +1,6 @@
 import { redis, isRedisAvailable } from '../../db/redis';
+import crypto from 'crypto';
+import net from 'net';
 
 const RATE_LIMIT_CONFIG = {
   ip: {
@@ -32,6 +34,52 @@ interface RateLimitEntry {
 }
 
 const memoryCache = new Map<string, RateLimitEntry>();
+const MAX_MEMORY_ENTRIES = 10_000;
+const MAX_CAPTCHA_TOKEN_LENGTH = 2_048;
+
+function stableKeyPart(value: unknown, fallback: string): string {
+  const normalized = typeof value === 'string' ? value.trim().slice(0, 4_096) : '';
+  return crypto.createHash('sha256').update(normalized || fallback).digest('hex');
+}
+
+function normalizeIp(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  let candidate = value.trim();
+  if (candidate.startsWith('[') && candidate.endsWith(']')) candidate = candidate.slice(1, -1);
+  const zoneIndex = candidate.indexOf('%');
+  if (zoneIndex !== -1) candidate = candidate.slice(0, zoneIndex);
+
+  const version = net.isIP(candidate);
+  if (version === 4) return candidate.split('.').map(part => Number(part)).join('.');
+  if (version === 6) {
+    const hostname = new URL(`http://[${candidate}]/`).hostname;
+    return hostname.slice(1, -1).toLowerCase();
+  }
+  return undefined;
+}
+
+function rateLimitKeys(ip: string, visitorId: string, apiPath: string) {
+  const ipPart = stableKeyPart(normalizeIp(ip), 'unknown-ip');
+  const visitorPart = stableKeyPart(visitorId, `missing-visitor:${ipPart}`);
+  const pathPart = stableKeyPart(apiPath, 'unknown-path');
+  return { ipPart, visitorPart, pathPart };
+}
+
+function inputHashKey(inputHash: string): string {
+  return `ratelimit:input_hash:${stableKeyPart(inputHash, 'missing-input-hash')}`;
+}
+
+function pruneMemoryCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of memoryCache) {
+    if (entry.expiresAt <= now) memoryCache.delete(key);
+  }
+  while (memoryCache.size >= MAX_MEMORY_ENTRIES) {
+    const oldestKey = memoryCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    memoryCache.delete(oldestKey);
+  }
+}
 
 function memGet(key: string): string | null {
   const entry = memoryCache.get(key);
@@ -43,18 +91,22 @@ function memGet(key: string): string | null {
 }
 
 function memSet(key: string, value: string, ttl: number): void {
+  if (!memoryCache.has(key)) pruneMemoryCache();
+  const parsedValue = Number.parseInt(value, 10);
   memoryCache.set(key, {
-    count: parseInt(value),
+    count: Number.isFinite(parsedValue) ? parsedValue : 0,
     expiresAt: Date.now() + ttl * 1000,
   });
 }
 
 function memIncr(key: string, ttl: number): number {
+  if (!memoryCache.has(key)) pruneMemoryCache();
   const entry = memoryCache.get(key);
-  const count = entry && entry.expiresAt > Date.now() ? entry.count + 1 : 1;
+  const isCurrent = Boolean(entry && entry.expiresAt > Date.now());
+  const count = isCurrent ? entry!.count + 1 : 1;
   memoryCache.set(key, {
     count,
-    expiresAt: Date.now() + ttl * 1000,
+    expiresAt: isCurrent ? entry!.expiresAt : Date.now() + ttl * 1000,
   });
   return count;
 }
@@ -73,8 +125,7 @@ async function kvGet(key: string): Promise<string | null> {
 async function kvSet(key: string, value: string, ttl: number): Promise<void> {
   if (isRedisAvailable()) {
     try {
-      await redis.set(key, value);
-      await redis.expire(key, ttl);
+      await redis.set(key, value, 'EX', ttl);
       return;
     } catch {
       // fallback to memory
@@ -86,9 +137,13 @@ async function kvSet(key: string, value: string, ttl: number): Promise<void> {
 async function kvIncr(key: string, ttl: number): Promise<number> {
   if (isRedisAvailable()) {
     try {
-      const result = await redis.incr(key);
-      await redis.expire(key, ttl);
-      return result;
+      const result = await redis.eval(
+        "local count = redis.call('INCR', KEYS[1]); if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]); end; return count",
+        1,
+        key,
+        ttl
+      );
+      return Number(result);
     } catch {
       // fallback to memory
     }
@@ -126,11 +181,14 @@ export async function checkRateLimit(
   apiPath: string,
   inputHash?: string
 ): Promise<RateLimitResult> {
-  const ipKey = `ratelimit:ip:${ip}:${apiPath}`;
-  const visitorKey = `ratelimit:visitor:${visitorId}:${apiPath}`;
-  const exemptKey = `captcha_exempt:${visitorId}`;
-  const ipBlockKey = `blocked:ip:${ip}`;
-  const visitorBlockKey = `blocked:visitor:${visitorId}`;
+  const { ipPart, visitorPart, pathPart } = rateLimitKeys(ip, visitorId, apiPath);
+  const ipKey = `ratelimit:ip:${ipPart}:${pathPart}`;
+  const ipHighKey = `ratelimit:ip_high:${ipPart}:${pathPart}`;
+  const visitorKey = `ratelimit:visitor:${visitorPart}:${pathPart}`;
+  const visitorHighKey = `ratelimit:visitor_high:${visitorPart}:${pathPart}`;
+  const exemptKey = `captcha_exempt:${visitorPart}`;
+  const ipBlockKey = `blocked:ip:${ipPart}`;
+  const visitorBlockKey = `blocked:visitor:${visitorPart}`;
 
   const [ipBlocked, visitorBlocked, exemptUntil] = await Promise.all([
     kvGet(ipBlockKey),
@@ -158,19 +216,19 @@ export async function checkRateLimit(
     };
   }
 
-  if (exemptUntil && parseInt(exemptUntil) > Date.now()) {
-    return { allowed: true, requiresCaptcha: false, blocked: false };
-  }
-
-  const [ipCount, visitorCount] = await Promise.all([
+  const [ipCount, ipHighCount, visitorCount, visitorHighCount] = await Promise.all([
     kvGet(ipKey),
+    kvGet(ipHighKey),
     kvGet(visitorKey),
+    kvGet(visitorHighKey),
   ]);
 
   const ipNum = parseInt(ipCount || '0');
+  const ipHighNum = parseInt(ipHighCount || '0');
   const visitorNum = parseInt(visitorCount || '0');
+  const visitorHighNum = parseInt(visitorHighCount || '0');
 
-  if (ipNum >= RATE_LIMIT_CONFIG.ip.thresholdHigh) {
+  if (ipHighNum >= RATE_LIMIT_CONFIG.ip.thresholdHigh) {
     await kvSet(ipBlockKey, 'RATE_LIMIT_EXCEEDED', RATE_LIMIT_CONFIG.blockDuration.ip);
     return {
       allowed: false,
@@ -181,7 +239,7 @@ export async function checkRateLimit(
     };
   }
 
-  if (visitorNum >= RATE_LIMIT_CONFIG.visitor.thresholdHigh) {
+  if (visitorHighNum >= RATE_LIMIT_CONFIG.visitor.thresholdHigh) {
     await kvSet(visitorBlockKey, 'RATE_LIMIT_EXCEEDED', RATE_LIMIT_CONFIG.blockDuration.visitor);
     return {
       allowed: false,
@@ -192,8 +250,12 @@ export async function checkRateLimit(
     };
   }
 
+  if (exemptUntil && parseInt(exemptUntil) > Date.now()) {
+    return { allowed: true, requiresCaptcha: false, blocked: false };
+  }
+
   if (inputHash) {
-    const hashKey = `ratelimit:input_hash:${inputHash}`;
+    const hashKey = inputHashKey(inputHash);
     const hashCount = await kvGet(hashKey);
     if (hashCount && parseInt(hashCount) > RATE_LIMIT_CONFIG.inputHash.threshold) {
       return {
@@ -218,26 +280,87 @@ export async function checkRateLimit(
 }
 
 export async function incrementRateLimit(ip: string, visitorId: string, apiPath: string, inputHash?: string): Promise<void> {
-  const ipKey = `ratelimit:ip:${ip}:${apiPath}`;
-  const visitorKey = `ratelimit:visitor:${visitorId}:${apiPath}`;
+  const { ipPart, visitorPart, pathPart } = rateLimitKeys(ip, visitorId, apiPath);
+  const ipKey = `ratelimit:ip:${ipPart}:${pathPart}`;
+  const ipHighKey = `ratelimit:ip_high:${ipPart}:${pathPart}`;
+  const visitorKey = `ratelimit:visitor:${visitorPart}:${pathPart}`;
+  const visitorHighKey = `ratelimit:visitor_high:${visitorPart}:${pathPart}`;
 
   await Promise.all([
     kvIncr(ipKey, RATE_LIMIT_CONFIG.ip.window),
+    kvIncr(ipHighKey, RATE_LIMIT_CONFIG.ip.windowHigh),
     kvIncr(visitorKey, RATE_LIMIT_CONFIG.visitor.window),
+    kvIncr(visitorHighKey, RATE_LIMIT_CONFIG.visitor.windowHigh),
   ]);
 
   if (inputHash) {
-    const hashKey = `ratelimit:input_hash:${inputHash}`;
+    const hashKey = inputHashKey(inputHash);
     await kvIncr(hashKey, RATE_LIMIT_CONFIG.inputHash.window);
   }
 }
 
 export async function setCaptchaExempt(visitorId: string): Promise<void> {
-  const exemptKey = `captcha_exempt:${visitorId}`;
+  if (typeof visitorId !== 'string' || visitorId.trim().length === 0) return;
+  const exemptKey = `captcha_exempt:${stableKeyPart(visitorId, 'missing-visitor')}`;
   const exemptUntil = Date.now() + RATE_LIMIT_CONFIG.captchaExempt.duration * 1000;
   await kvSet(exemptKey, exemptUntil.toString(), RATE_LIMIT_CONFIG.captchaExempt.duration);
 }
 
-export async function verifyCaptcha(token: string): Promise<{ success: boolean; reason?: string }> {
-  return Promise.resolve({ success: true });
+interface TurnstileResponse {
+  success?: boolean;
+  hostname?: string;
+  action?: string;
+  'error-codes'?: string[];
+}
+
+function captchaFailure(reason: string): { success: false; reason: string } {
+  return { success: false, reason };
+}
+
+export async function verifyCaptcha(token: string, remoteIp?: string): Promise<{ success: boolean; reason?: string }> {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const bypassEnabled = process.env.CAPTCHA_BYPASS === 'true';
+
+  if (bypassEnabled && !isProduction) return { success: true };
+  const normalizedToken = typeof token === 'string' ? token.trim() : '';
+  if (normalizedToken.length === 0 || normalizedToken.length > MAX_CAPTCHA_TOKEN_LENGTH) {
+    return captchaFailure('INVALID_TOKEN');
+  }
+
+  const normalizedRemoteIp = remoteIp === undefined ? undefined : normalizeIp(remoteIp);
+  if (remoteIp !== undefined && !normalizedRemoteIp) return captchaFailure('INVALID_REMOTE_IP');
+
+  const secret = process.env.TURNSTILE_SECRET_KEY?.trim();
+  if (!secret) return captchaFailure('CAPTCHA_NOT_CONFIGURED');
+
+  const timeoutMs = Math.min(Math.max(Number.parseInt(process.env.TURNSTILE_TIMEOUT_MS || '5000', 10) || 5_000, 1_000), 15_000);
+  const form = new URLSearchParams({ secret, response: normalizedToken });
+  if (normalizedRemoteIp) form.set('remoteip', normalizedRemoteIp);
+
+  try {
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: form,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return captchaFailure('VERIFICATION_UNAVAILABLE');
+
+    const result = await response.json() as TurnstileResponse;
+    if (result.success !== true) {
+      const errorCode = result['error-codes']?.[0];
+      return captchaFailure(typeof errorCode === 'string' ? errorCode : 'VERIFICATION_FAILED');
+    }
+
+    const expectedHostname = process.env.TURNSTILE_EXPECTED_HOSTNAME?.trim();
+    if (expectedHostname && result.hostname?.toLowerCase() !== expectedHostname.toLowerCase()) {
+      return captchaFailure('HOSTNAME_MISMATCH');
+    }
+    const expectedAction = process.env.TURNSTILE_EXPECTED_ACTION?.trim();
+    if (expectedAction && result.action !== expectedAction) return captchaFailure('ACTION_MISMATCH');
+
+    return { success: true };
+  } catch {
+    return captchaFailure('VERIFICATION_UNAVAILABLE');
+  }
 }

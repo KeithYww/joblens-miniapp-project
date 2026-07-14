@@ -6,9 +6,9 @@ let redisConnected = false;
 
 export const redis = new Redis(redisUrl, {
   lazyConnect: true,
-  retryStrategy: () => {
+  retryStrategy: (times) => {
     redisConnected = false;
-    return null; // don't retry
+    return Math.min(times * 500, 10_000);
   },
   maxRetriesPerRequest: 1,
   enableOfflineQueue: false,
@@ -36,11 +36,11 @@ export function isRedisAvailable(): boolean {
 
 export async function initRedis() {
   try {
-    await redis.connect();
+    if (redis.status === 'wait') await redis.connect();
     await redis.ping();
     redisConnected = true;
   } catch (err) {
-    console.error('Failed to connect to Redis, using memory fallback:', (err as Error).message);
+    console.error('Redis is unavailable; memory fallback is active while reconnecting:', (err as Error).message);
     redisConnected = false;
   }
 }

@@ -9,7 +9,8 @@ import {
   DisclaimerBanner,
   FeedbackForm,
 } from '@/components';
-import { api } from '@/api';
+import { TurnstileChallenge } from '@/components/TurnstileChallenge';
+import { api, ApiRequestError } from '@/api';
 import type { ReportFeedbackRequest, RiskReport } from '@/types';
 
 export function ReportPage() {
@@ -17,8 +18,15 @@ export function ReportPage() {
   const [report, setReport] = useState<RiskReport | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
   const [showFeedback, setShowFeedback] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [captchaRequired, setCaptchaRequired] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
+  const [deleteCaptchaRequired, setDeleteCaptchaRequired] = useState(false);
+  const [deleteCaptchaToken, setDeleteCaptchaToken] = useState('');
+  const [deleteCaptchaResetSignal, setDeleteCaptchaResetSignal] = useState(0);
 
   const loadReport = useCallback(async () => {
     if (!id) return;
@@ -44,16 +52,26 @@ export function ReportPage() {
       return;
     }
     setIsDeleting(true);
+    setActionError('');
     try {
-      await api.reports.delete(id);
+      await api.reports.delete(id, deleteCaptchaToken || undefined);
       window.location.href = '/';
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : '删除失败';
-      setError(errorMsg);
+      if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
+        setDeleteCaptchaRequired(true);
+        setActionError('删除请求较频繁，请完成验证后重试。');
+      } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_FAILED') {
+        setDeleteCaptchaRequired(true);
+        setDeleteCaptchaToken('');
+        setDeleteCaptchaResetSignal(value => value + 1);
+        setActionError('验证已失效，请重新完成验证。');
+      } else {
+        setActionError(err instanceof Error ? err.message : '删除失败');
+      }
     } finally {
       setIsDeleting(false);
     }
-  }, [id]);
+  }, [deleteCaptchaToken, id]);
 
   const handleFeedback = useCallback(async (data: { type: string; content: string }) => {
     if (!id) return;
@@ -62,11 +80,19 @@ export function ReportPage() {
         report_id: id,
         feedback_type: data.type as ReportFeedbackRequest['feedback_type'],
         content: data.content,
+        captcha_token: captchaToken || undefined,
       });
-    } catch {
-      // ignore error
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
+        setCaptchaRequired(true);
+      } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_FAILED') {
+        setCaptchaRequired(true);
+        setCaptchaToken('');
+        setCaptchaResetSignal(value => value + 1);
+      }
+      throw err;
     }
-  }, [id]);
+  }, [captchaToken, id]);
 
   if (isLoading) {
     return (
@@ -137,7 +163,7 @@ export function ReportPage() {
           <span className="text-lg font-bold text-gray-800">风险报告</span>
           <button
             onClick={handleDelete}
-            disabled={isDeleting}
+            disabled={isDeleting || (deleteCaptchaRequired && !deleteCaptchaToken)}
             className="flex items-center gap-1 text-sm text-danger-600 hover:text-danger-700 disabled:opacity-50"
           >
             {isDeleting ? (
@@ -151,6 +177,19 @@ export function ReportPage() {
       </header>
 
       <main className="max-w-2xl mx-auto px-4 py-6 space-y-4">
+        {actionError && (
+          <div className="text-sm text-danger-600 bg-danger-50 rounded-lg p-3">
+            {actionError}
+          </div>
+        )}
+        {deleteCaptchaRequired && (
+          <div className="rounded-xl bg-white border border-gray-100 p-4">
+            <TurnstileChallenge
+              onVerify={setDeleteCaptchaToken}
+              resetSignal={deleteCaptchaResetSignal}
+            />
+          </div>
+        )}
         {report.confidence === '低' && (
           <div className="rounded-xl bg-warning-50 border border-warning-200 p-4">
             <p className="text-sm text-warning-700">
@@ -207,7 +246,18 @@ export function ReportPage() {
           </button>
           {showFeedback && (
             <div className="mt-4 pt-4 border-t border-gray-200">
-              <FeedbackForm onSubmit={handleFeedback} />
+              {captchaRequired && (
+                <div className="mb-4">
+                  <TurnstileChallenge
+                    onVerify={setCaptchaToken}
+                    resetSignal={captchaResetSignal}
+                  />
+                </div>
+              )}
+              <FeedbackForm
+                onSubmit={handleFeedback}
+                disabled={captchaRequired && !captchaToken}
+              />
             </div>
           )}
         </div>

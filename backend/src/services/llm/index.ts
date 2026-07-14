@@ -1,6 +1,7 @@
 import type { RiskReport, HrAnalysis, LlmProviderResult } from '../../types';
 import { SiliconFlowProvider } from './siliconflow';
 import { QwenCloudProvider } from './qwencloud';
+import { safeProviderError } from './common';
 
 interface LlmProvider {
   name: string;
@@ -186,6 +187,7 @@ class RuleBasedProvider implements LlmProvider {
     jd_text: string;
     hr_chat_text?: string;
   }): Promise<LlmProviderResult> {
+    const startTime = Date.now();
     const jd = input.jd_text.toLowerCase();
     
     let score = 45;
@@ -260,11 +262,9 @@ class RuleBasedProvider implements LlmProvider {
     return Promise.resolve({
       rawText: jsonString,
       parsedJson: processedReport,
-      model: 'mock-model',
-      provider: 'mock',
-      inputTokens: input.jd_text.length * 2,
-      outputTokens: jsonString.length * 2,
-      latencyMs: 500,
+      model: 'rule-engine-v1',
+      provider: this.name,
+      latencyMs: Date.now() - startTime,
       costEstimate: 0,
     });
   }
@@ -275,6 +275,7 @@ class RuleBasedProvider implements LlmProvider {
     hr_reply: string;
     jd_context?: string;
   }): Promise<LlmProviderResult> {
+    const startTime = Date.now();
     const reply = input.hr_reply.toLowerCase();
     
     let avoidanceScore = 50;
@@ -317,11 +318,9 @@ class RuleBasedProvider implements LlmProvider {
     return Promise.resolve({
       rawText: jsonString,
       parsedJson: hrAnalysis,
-      model: 'mock-model',
-      provider: 'mock',
-      inputTokens: input.user_question.length + input.hr_reply.length * 2,
-      outputTokens: jsonString.length * 2,
-      latencyMs: 300,
+      model: 'rule-engine-v1',
+      provider: this.name,
+      latencyMs: Date.now() - startTime,
       costEstimate: 0,
     });
   }
@@ -332,60 +331,99 @@ export { SiliconFlowProvider } from './siliconflow';
 export { QwenCloudProvider } from './qwencloud';
 
 export function createLlmProvider(): LlmProvider {
-  const providerType = process.env.AI_PROVIDER || 'rule-based';
+  const providerType = (process.env.AI_PROVIDER || 'rule-based').trim().toLowerCase();
   
   switch (providerType) {
     case 'siliconflow':
       return new SiliconFlowProvider();
     case 'qwen-cloud':
+    case 'qwencloud':
       return new QwenCloudProvider();
     case 'rule-based':
     case 'mock':
-    default:
       return new RuleBasedProvider();
+    default:
+      throw new Error(`Unsupported AI_PROVIDER: ${providerType}`);
   }
 }
 
 export class FallbackLlmProvider implements LlmProvider {
   name = 'fallback';
-  private primary: LlmProvider;
-  private fallback: LlmProvider;
-  private primaryFailed = false;
+  private readonly primary: LlmProvider;
+  private readonly fallback: LlmProvider;
+  private readonly failureThreshold: number;
+  private readonly recoveryWindowMs: number;
+  private consecutiveFailures = 0;
+  private openedAt = 0;
+  private halfOpenProbeInFlight = false;
 
-  constructor(primary: LlmProvider, fallback: LlmProvider) {
+  constructor(
+    primary: LlmProvider,
+    fallback: LlmProvider,
+    options?: { failureThreshold?: number; recoveryWindowMs?: number },
+  ) {
     this.primary = primary;
     this.fallback = fallback;
+    this.failureThreshold = options?.failureThreshold ?? positiveInteger(process.env.AI_CIRCUIT_FAILURE_THRESHOLD, 3);
+    this.recoveryWindowMs = options?.recoveryWindowMs ?? positiveInteger(process.env.AI_CIRCUIT_RECOVERY_MS, 30_000);
   }
 
   async analyzeJobRisk(input: Parameters<LlmProvider['analyzeJobRisk']>[0]): Promise<LlmProviderResult> {
-    if (!this.primaryFailed) {
-      try {
-        const result = await this.primary.analyzeJobRisk(input);
-        return result;
-      } catch (err) {
-        console.warn(`Primary provider ${this.primary.name} failed, falling back to rule-based:`, (err as Error).message);
-        this.primaryFailed = true;
-      }
-    }
-    const result = await this.fallback.analyzeJobRisk(input);
-    result.provider = `fallback(${this.primary.name})`;
-    return result;
+    return this.run(
+      () => this.primary.analyzeJobRisk(input),
+      () => this.fallback.analyzeJobRisk(input),
+    );
   }
 
   async analyzeHrReply(input: Parameters<LlmProvider['analyzeHrReply']>[0]): Promise<LlmProviderResult> {
-    if (!this.primaryFailed) {
+    return this.run(
+      () => this.primary.analyzeHrReply(input),
+      () => this.fallback.analyzeHrReply(input),
+    );
+  }
+
+  private canTryPrimary(): boolean {
+    if (this.openedAt === 0) return true;
+    if (Date.now() - this.openedAt < this.recoveryWindowMs || this.halfOpenProbeInFlight) return false;
+    this.halfOpenProbeInFlight = true;
+    return true;
+  }
+
+  private recordSuccess(): void {
+    this.consecutiveFailures = 0;
+    this.openedAt = 0;
+    this.halfOpenProbeInFlight = false;
+  }
+
+  private recordFailure(): void {
+    this.consecutiveFailures += 1;
+    this.halfOpenProbeInFlight = false;
+    if (this.consecutiveFailures >= this.failureThreshold) this.openedAt = Date.now();
+  }
+
+  private async run(
+    callPrimary: () => Promise<LlmProviderResult>,
+    callFallback: () => Promise<LlmProviderResult>,
+  ): Promise<LlmProviderResult> {
+    if (this.canTryPrimary()) {
       try {
-        const result = await this.primary.analyzeHrReply(input);
+        const result = await callPrimary();
+        this.recordSuccess();
         return result;
-      } catch (err) {
-        console.warn(`Primary provider ${this.primary.name} failed, falling back to rule-based:`, (err as Error).message);
-        this.primaryFailed = true;
+      } catch (error) {
+        this.recordFailure();
+        console.warn(`Primary provider ${this.primary.name} failed; using fallback`, safeProviderError(error));
       }
     }
-    const result = await this.fallback.analyzeHrReply(input);
-    result.provider = `fallback(${this.primary.name})`;
+    const result = await callFallback();
+    result.provider = `fallback(${this.primary.name})->${this.fallback.name}`;
     return result;
   }
+}
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 export function createLlmProviderWithFallback(): LlmProvider {

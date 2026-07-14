@@ -90,6 +90,18 @@ export interface ApiError {
   retry_after?: string;
 }
 
+export interface VisitorDataDeleteResult {
+  status: 'deleted';
+  message: string;
+  deleted_at: string;
+  deleted: {
+    reports: number;
+    hr_analyses: number;
+    interview_feedbacks: number;
+    report_feedbacks: number;
+  };
+}
+
 export interface LlmProviderResult {
   rawText: string;
   parsedJson: unknown;

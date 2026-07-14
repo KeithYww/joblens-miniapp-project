@@ -11,10 +11,24 @@ import type {
 const configuredApiUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const API_BASE_URL = configuredApiUrl.replace(/\/+$/, '').replace(/\/api$/, '');
 
+export class ApiRequestError extends Error {
+  readonly code: string;
+  readonly captchaProvider?: string;
+  readonly retryAfter?: string;
+
+  constructor(error: ApiError) {
+    super(error.message || '请求失败');
+    this.name = 'ApiRequestError';
+    this.code = error.error;
+    this.captchaProvider = error.captcha_provider;
+    this.retryAfter = error.retry_after;
+  }
+}
+
 function getVisitorId(): string {
   let visitorId = localStorage.getItem('visitor_id');
-  if (!visitorId) {
-    visitorId = `visitor_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  if (!visitorId || !/^visitor_(?:[a-f0-9]{12}|[a-f0-9]{32})$/.test(visitorId)) {
+    visitorId = `visitor_${crypto.randomUUID().replace(/-/g, '')}`;
     localStorage.setItem('visitor_id', visitorId);
   }
   return visitorId;
@@ -33,13 +47,21 @@ async function fetchApi<T>(
     headers,
   });
 
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw data as ApiError;
+  let data: T | ApiError;
+  try {
+    data = await response.json() as T | ApiError;
+  } catch {
+    throw new ApiRequestError({
+      error: 'INVALID_RESPONSE',
+      message: response.ok ? '服务响应格式异常。' : `服务暂时不可用（${response.status}）。`,
+    });
   }
 
-  return data;
+  if (!response.ok) {
+    throw new ApiRequestError(data as ApiError);
+  }
+
+  return data as T;
 }
 
 export const api = {
@@ -53,9 +75,10 @@ export const api = {
     get: async (id: string): Promise<RiskReport> => {
       return fetchApi(`/api/reports/${id}`);
     },
-    delete: async (id: string): Promise<{ status: string; message: string; deleted_at: string }> => {
+    delete: async (id: string, captchaToken?: string): Promise<{ status: string; message: string; deleted_at: string }> => {
       return fetchApi(`/api/reports/${id}`, {
         method: 'DELETE',
+        body: JSON.stringify({ captcha_token: captchaToken || undefined }),
       });
     },
     hrAnalysis: async (
@@ -97,6 +120,14 @@ export const api = {
       return fetchApi('/api/report-feedbacks', {
         method: 'POST',
         body: JSON.stringify(data),
+      });
+    },
+  },
+  visitorData: {
+    deleteAll: async (captchaToken?: string): Promise<{ status: string; message: string; deleted_at: string }> => {
+      return fetchApi('/api/visitor-data', {
+        method: 'DELETE',
+        body: JSON.stringify({ captcha_token: captchaToken || undefined }),
       });
     },
   },

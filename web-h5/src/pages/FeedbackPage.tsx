@@ -1,7 +1,8 @@
 import { useState, useCallback } from 'react';
 import { ArrowLeft, CheckCircle, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { api } from '@/api';
+import { api, ApiRequestError } from '@/api';
+import { TurnstileChallenge } from '@/components/TurnstileChallenge';
 import type { InterviewFeedbackRequest } from '@/types';
 
 export function FeedbackPage() {
@@ -19,6 +20,9 @@ export function FeedbackPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [captchaRequired, setCaptchaRequired] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
 
   const handleSubmit = useCallback(async () => {
     if (!companyName.trim() || !jobTitle.trim() || !jdClaim.trim() || !interviewActual.trim()) {
@@ -41,14 +45,24 @@ export function FeedbackPage() {
       involves_deposit: involvesDeposit,
       subject_mismatch: subjectMismatch,
       recommend_to_others: recommendToOthers,
+      captcha_token: captchaToken || undefined,
     };
 
     try {
       await api.feedbacks.interview(data);
       setSubmitted(true);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : '提交失败，请稍后重试';
-      setError(errorMsg);
+      if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
+        setCaptchaRequired(true);
+        setError('请求较频繁，请完成验证后再次提交。');
+      } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_FAILED') {
+        setCaptchaRequired(true);
+        setCaptchaToken('');
+        setCaptchaResetSignal(value => value + 1);
+        setError('验证已失效，请重新完成验证。');
+      } else {
+        setError(err instanceof Error ? err.message : '提交失败，请稍后重试');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -64,6 +78,7 @@ export function FeedbackPage() {
     involvesDeposit,
     subjectMismatch,
     recommendToOthers,
+    captchaToken,
   ]);
 
   if (submitted) {
@@ -257,9 +272,17 @@ export function FeedbackPage() {
             </div>
           )}
 
+          {captchaRequired && (
+            <TurnstileChallenge
+              onVerify={setCaptchaToken}
+              onError={() => setError('验证加载失败，请刷新页面后重试。')}
+              resetSignal={captchaResetSignal}
+            />
+          )}
+
           <button
             onClick={handleSubmit}
-            disabled={isLoading}
+            disabled={isLoading || (captchaRequired && !captchaToken)}
             className="w-full py-4 rounded-xl font-semibold gradient-primary text-white disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             {isLoading ? (
