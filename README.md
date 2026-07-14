@@ -2,6 +2,10 @@
 
 `职镜 JobLens` 是一款面向求职者的岗位风险检测 Web/H5 工具。第一版聚焦"岗位信息是否透明、JD 是否存在包装、HR 是否回避关键问题、是否需要继续面试前追问"，暂不做全网岗位库、企业黑名单、复杂社区和付费会员。
 
+## 在线体验
+
+- [https://joblens-miniapp.vercel.app](https://joblens-miniapp.vercel.app)
+
 ## 🚀 项目状态
 
 - **项目阶段**：MVP 完成（可部署上线）
