@@ -249,6 +249,9 @@ export function TextInputPanel({
   onChange,
   maxLength,
   required = false,
+  warning,
+  locale = 'zh-CN',
+  inputId,
 }: {
   label: string;
   placeholder: string;
@@ -256,10 +259,15 @@ export function TextInputPanel({
   onChange: (value: string) => void;
   maxLength?: number;
   required?: boolean;
+  warning?: string;
+  locale?: 'zh-CN' | 'en-US';
+  inputId?: string;
 }) {
   const charCount = value.length;
-  const isWarning = maxLength && charCount > maxLength * 0.8;
-  const isError = maxLength && charCount > maxLength;
+  const isWarning = Boolean(maxLength && charCount >= maxLength * 0.8 && charCount <= maxLength);
+  const isError = Boolean(maxLength && charCount > maxLength);
+  const hasIssue = isError || Boolean(warning);
+  const messageId = inputId ? `${inputId}-message` : undefined;
 
   return (
     <div className="space-y-2">
@@ -268,22 +276,38 @@ export function TextInputPanel({
         {required && <span className="text-danger-500 ml-1">*</span>}
       </label>
       <textarea
+        id={inputId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        aria-invalid={hasIssue}
+        aria-describedby={hasIssue ? messageId : undefined}
         className={`w-full h-32 p-4 rounded-xl border resize-none transition-colors ${
-          isError
+          hasIssue
             ? 'border-danger-300 focus:border-danger-500 focus:ring-danger-200'
             : 'border-gray-200 focus:border-primary-500 focus:ring-primary-200'
         } focus:outline-none focus:ring-2`}
       />
       {maxLength && (
-        <div
+        <div className="flex items-start justify-between gap-3">
+          <div
+            id={messageId}
+            className="min-h-4 text-xs text-danger-600"
+            role={hasIssue ? 'alert' : undefined}
+          >
+            {warning || (isError
+              ? (locale === 'en-US'
+                ? `Remove ${charCount - maxLength} characters before submitting.`
+                : `已超出 ${charCount - maxLength} 字，请删减后再提交。`)
+              : '')}
+          </div>
+          <div
           className={`text-xs ${
             isError ? 'text-danger-500' : isWarning ? 'text-warning-500' : 'text-gray-400'
           }`}
-        >
-          {charCount}/{maxLength} 字
+          >
+            {charCount}/{maxLength} {locale === 'en-US' ? 'characters' : '字'}
+          </div>
         </div>
       )}
     </div>

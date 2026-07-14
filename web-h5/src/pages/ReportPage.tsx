@@ -47,6 +47,13 @@ export function ReportPage() {
     loadReport();
   }, [loadReport]);
 
+  useEffect(() => {
+    if (!report || window.location.hash !== '#follow-up-questions') return;
+    window.requestAnimationFrame(() => {
+      document.getElementById('follow-up-questions')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [report]);
+
   const handleDelete = useCallback(async () => {
     if (!id || !window.confirm('确定删除该报告及相关数据？删除后无法恢复。')) {
       return;
@@ -242,7 +249,9 @@ export function ReportPage() {
 
         <MissingInfoList missingInfo={report.missing_info} />
 
-        <QuestionCard questions={report.questions} />
+        <div id="follow-up-questions" className="scroll-mt-24">
+          <QuestionCard questions={report.questions} />
+        </div>
 
         <DisclaimerBanner />
 

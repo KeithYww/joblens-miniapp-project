@@ -1,11 +1,12 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, ShieldCheck, FileText, MessageSquare, ImageUp, X, CheckCircle, ChevronRight } from 'lucide-react';
+import { ArrowRight, ShieldCheck, FileText, MessageSquare, ImageUp, X, CheckCircle, ChevronRight, Info } from 'lucide-react';
 import { TextInputPanel } from '@/components';
 import { TurnstileChallenge } from '@/components/TurnstileChallenge';
 import { api, ApiRequestError } from '@/api';
 import type { AiQuotaSnapshot, DetectRequest } from '@/types';
 import { LanguageSwitcher, useI18n } from '@/i18n';
+import { detectSensitiveData, type SensitiveDataType } from '@/utils/inputPrivacy';
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -30,6 +31,26 @@ export function HomePage() {
   const [extractStatus, setExtractStatus] = useState('');
   const [extractProgress, setExtractProgress] = useState(0);
   const [quota, setQuota] = useState<AiQuotaSnapshot | null>(null);
+  const [navigationNotice, setNavigationNotice] = useState('');
+  const [isAnalysisHighlighted, setIsAnalysisHighlighted] = useState(false);
+  const navigationNoticeTimer = useRef<number | null>(null);
+  const analysisHighlightTimer = useRef<number | null>(null);
+
+  const jdSensitiveTypes = useMemo(() => detectSensitiveData(jdText), [jdText]);
+  const hrSensitiveTypes = useMemo(() => detectSensitiveData(hrChatText), [hrChatText]);
+  const hasSensitiveData = jdSensitiveTypes.length > 0 || hrSensitiveTypes.length > 0;
+  const exceedsTextLimit = jdText.length > 8000 || hrChatText.length > 8000;
+
+  const sensitiveWarning = useCallback((types: SensitiveDataType[]) => {
+    if (types.length === 0) return undefined;
+    const labels = isEnglish
+      ? { mobile: 'a full mobile number', id_card: 'an ID number', bank_card: 'a bank card number' }
+      : { mobile: '完整手机号', id_card: '身份证号', bank_card: '银行卡号' };
+    const detected = types.map(type => labels[type]).join(isEnglish ? ', ' : '、');
+    return isEnglish
+      ? `Sensitive information detected (${detected}). Remove or mask it before submitting.`
+      : `检测到敏感信息（${detected}），请删除或打码后再提交。`;
+  }, [isEnglish]);
 
   const refreshQuota = useCallback(async () => {
     try {
@@ -42,6 +63,11 @@ export function HomePage() {
   useEffect(() => {
     void refreshQuota();
   }, [refreshQuota]);
+
+  useEffect(() => () => {
+    if (navigationNoticeTimer.current) window.clearTimeout(navigationNoticeTimer.current);
+    if (analysisHighlightTimer.current) window.clearTimeout(analysisHighlightTimer.current);
+  }, []);
 
   useEffect(() => {
     if (!isExtracting) return;
@@ -152,6 +178,16 @@ export function HomePage() {
       return;
     }
 
+    if (exceedsTextLimit) {
+      setError(isEnglish ? 'Shorten each text field to 8,000 characters before submitting.' : '岗位 JD 和 HR 聊天记录均不能超过 8000 字，请删减后再提交。');
+      return;
+    }
+
+    if (hasSensitiveData) {
+      setError(isEnglish ? 'Remove or mask the detected sensitive information before submitting.' : '请先删除或打码输入框中检测到的敏感信息。');
+      return;
+    }
+
     setError('');
     setIsLoading(true);
 
@@ -190,7 +226,7 @@ export function HomePage() {
     } finally {
       setIsLoading(false);
     }
-  }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, captchaToken, locale, navigate, isEnglish]);
+  }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, captchaToken, locale, navigate, isEnglish, exceedsTextLimit, hasSensitiveData]);
 
   const handleCaptchaVerify = useCallback((token: string) => {
     setCaptchaToken(token);
@@ -208,18 +244,29 @@ export function HomePage() {
     ? Math.max(1, Math.ceil((new Date(rateLimitNotice.retryAfter).getTime() - Date.now()) / 60_000))
     : null;
 
-  const scrollToAnalysis = useCallback(() => {
-    document.getElementById('job-analysis-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const announceNavigation = useCallback((message: string) => {
+    setNavigationNotice(message);
+    if (navigationNoticeTimer.current) window.clearTimeout(navigationNoticeTimer.current);
+    navigationNoticeTimer.current = window.setTimeout(() => setNavigationNotice(''), 2600);
   }, []);
+
+  const scrollToAnalysis = useCallback((message: string) => {
+    document.getElementById('job-analysis-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setIsAnalysisHighlighted(true);
+    announceNavigation(message);
+    window.setTimeout(() => document.getElementById('job-description-input')?.focus({ preventScroll: true }), 450);
+    if (analysisHighlightTimer.current) window.clearTimeout(analysisHighlightTimer.current);
+    analysisHighlightTimer.current = window.setTimeout(() => setIsAnalysisHighlighted(false), 1800);
+  }, [announceNavigation]);
 
   const openQuestions = useCallback(() => {
     const reportId = localStorage.getItem('latest_report_id');
     if (reportId && /^rep_[a-z0-9]{12}$/.test(reportId)) {
-      navigate(`/report/${reportId}`);
+      navigate(`/report/${reportId}#follow-up-questions`);
       return;
     }
-    scrollToAnalysis();
-  }, [navigate, scrollToAnalysis]);
+    scrollToAnalysis(isEnglish ? 'Analyze a job first to generate follow-up questions.' : '请先完成岗位检测，生成追问建议。');
+  }, [navigate, scrollToAnalysis, isEnglish]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-warning-50">
@@ -253,7 +300,7 @@ export function HomePage() {
           </p>
         </div>
 
-        <div id="job-analysis-form" className="scroll-mt-24 bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-6">
+        <div id="job-analysis-form" className={`scroll-mt-24 bg-white rounded-2xl shadow-sm border p-6 space-y-6 transition-all duration-300 ${isAnalysisHighlighted ? 'border-primary-400 ring-4 ring-primary-100' : 'border-gray-100'}`}>
           <section className="border border-primary-100 bg-primary-50/40 rounded-xl p-4">
             <div className="flex items-start gap-3">
               <ImageUp className="w-5 h-5 text-primary-600 mt-0.5 shrink-0" />
@@ -359,6 +406,9 @@ export function HomePage() {
             onChange={setJdText}
             maxLength={8000}
             required
+            warning={sensitiveWarning(jdSensitiveTypes)}
+            locale={locale}
+            inputId="job-description-input"
           />
 
           <TextInputPanel
@@ -367,6 +417,9 @@ export function HomePage() {
             value={hrChatText}
             onChange={setHrChatText}
             maxLength={8000}
+            warning={sensitiveWarning(hrSensitiveTypes)}
+            locale={locale}
+            inputId="recruiter-conversation-input"
           />
 
           <div className="text-xs text-gray-400 bg-gray-50 rounded-lg p-3">
@@ -433,7 +486,7 @@ export function HomePage() {
 
           <button
             onClick={handleSubmit}
-            disabled={isLoading || (captchaRequired && !captchaToken)}
+            disabled={isLoading || exceedsTextLimit || hasSensitiveData || (captchaRequired && !captchaToken)}
             className="w-full py-4 rounded-xl font-semibold gradient-primary text-white flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:shadow-lg"
           >
             {isLoading ? (
@@ -457,7 +510,7 @@ export function HomePage() {
         </div>
 
         <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
-          <button type="button" onClick={scrollToAnalysis} className="group relative bg-white rounded-xl border border-gray-100 p-4 text-center transition-colors hover:border-primary-200 hover:bg-primary-50/40 focus:outline-none focus:ring-2 focus:ring-primary-200">
+          <button type="button" onClick={() => scrollToAnalysis(isEnglish ? 'Job input is ready.' : '已定位到岗位输入区。')} className="group relative bg-white rounded-xl border border-gray-100 p-4 text-center transition-colors hover:border-primary-200 hover:bg-primary-50/40 active:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-primary-200">
             <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center mx-auto mb-2">
               <ShieldCheck className="w-5 h-5 text-primary-600" />
             </div>
@@ -465,7 +518,7 @@ export function HomePage() {
             <p className="text-xs text-gray-500 mt-1">{isEnglish ? 'Spot job risks early' : '智能检测岗位风险'}</p>
             <ChevronRight className="absolute right-2 top-2 h-4 w-4 text-gray-300 transition-colors group-hover:text-primary-500" />
           </button>
-          <button type="button" onClick={openQuestions} className="group relative bg-white rounded-xl border border-gray-100 p-4 text-center transition-colors hover:border-warning-200 hover:bg-warning-50/40 focus:outline-none focus:ring-2 focus:ring-warning-200">
+          <button type="button" onClick={openQuestions} className="group relative bg-white rounded-xl border border-gray-100 p-4 text-center transition-colors hover:border-warning-200 hover:bg-warning-50/40 active:bg-warning-100 focus:outline-none focus:ring-2 focus:ring-warning-200">
             <div className="w-10 h-10 rounded-full bg-warning-100 flex items-center justify-center mx-auto mb-2">
               <MessageSquare className="w-5 h-5 text-warning-600" />
             </div>
@@ -482,6 +535,13 @@ export function HomePage() {
             <ChevronRight className="absolute right-2 top-2 h-4 w-4 text-gray-300 transition-colors group-hover:text-success-500" />
           </Link>
         </div>
+
+        {navigationNotice && (
+          <div className="fixed bottom-5 left-1/2 z-50 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-lg bg-gray-900 px-4 py-3 text-sm text-white shadow-lg" role="status" aria-live="polite">
+            <Info className="h-4 w-4 shrink-0 text-primary-200" />
+            <span>{navigationNotice}</span>
+          </div>
+        )}
       </main>
 
       <footer className="mt-12 py-6 border-t border-gray-100">
