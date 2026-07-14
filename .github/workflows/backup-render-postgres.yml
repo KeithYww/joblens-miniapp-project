@@ -47,13 +47,12 @@ jobs:
           database_url="$(request "$RENDER_API/postgres/$database_id/connection-info" | jq -r '.externalConnectionString // empty')"
           test -n "$database_url"
           echo "::add-mask::$database_url"
-          export DATABASE_URL="$database_url"
 
           timestamp="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
           mkdir -p backups
           dump="backups/joblens-$timestamp.dump"
           encrypted="$dump.enc"
-          pg_dump --format=custom --compress=9 --no-owner --no-privileges --file="$dump"
+          pg_dump "$database_url" --format=custom --compress=9 --no-owner --no-privileges --file="$dump"
           test -s "$dump"
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
             -in "$dump" -out "$encrypted" -pass env:BACKUP_ENCRYPTION_PASSPHRASE
