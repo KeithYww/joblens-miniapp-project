@@ -171,6 +171,7 @@ export function MissingInfoList({ missingInfo }: { missingInfo: string[] }) {
 
 export function QuestionCard({ questions }: { questions: string[] }) {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [showAllQuestions, setShowAllQuestions] = useState(false);
 
   const copyToClipboard = useCallback(async (text: string, index: number) => {
     try {
@@ -186,7 +187,7 @@ export function QuestionCard({ questions }: { questions: string[] }) {
     return null;
   }
 
-  const displayQuestions = questions.slice(0, 3);
+  const displayQuestions = showAllQuestions ? questions : questions.slice(0, 3);
   const moreCount = questions.length - 3;
 
   return (
@@ -218,8 +219,12 @@ export function QuestionCard({ questions }: { questions: string[] }) {
       </div>
       {moreCount > 0 && (
         <div className="mt-3 pt-3 border-t border-gray-200">
-          <button className="text-sm text-primary-600 hover:text-primary-700 font-medium">
-            展开更多追问 ({moreCount})
+          <button
+            type="button"
+            onClick={() => setShowAllQuestions(value => !value)}
+            className="text-sm text-primary-600 hover:text-primary-700 font-medium"
+          >
+            {showAllQuestions ? '收起追问' : `展开更多追问 (${moreCount})`}
           </button>
         </div>
       )}
