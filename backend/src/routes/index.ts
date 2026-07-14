@@ -461,6 +461,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (cached) {
       storeReport(cached, visitorId, inputHash);
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 200, aiCalled: false });
+      reply.header('x-joblens-analysis-source', 'cache');
       return reply.send(cached);
     }
 
@@ -471,6 +472,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       report.report_id = generateId('rep');
       report.created_at = new Date().toISOString();
       const now = new Date();
+      const source = llmResult.provider.startsWith('fallback(') ? 'fallback' : 'model';
+
+      reply.headers({
+        'x-joblens-analysis-source': source,
+        'x-joblens-ai-provider': llmResult.provider,
+        'x-joblens-ai-model': llmResult.model,
+        'x-joblens-ai-latency-ms': String(llmResult.latencyMs),
+      });
 
       if (isDbAvailable()) {
         await runDbOperation(() => prisma.jobReport.create({

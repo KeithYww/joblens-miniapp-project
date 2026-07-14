@@ -209,7 +209,7 @@ export function buildJobRiskMessages(input: JobRiskInput): ChatMessage[] {
     { role: 'system', content: SYSTEM_BOUNDARY },
     {
       role: 'user',
-      content: `任务：分析招聘信息风险。评分 0-100（越高风险越大），置信度只能是高/中/低，证据必须来自输入材料。\n输出字段必须且只能是：overall_score, risk_level, confidence, predicted_role, risk_types, evidence, missing_info, questions, recommendation。\n不可信数据开始 <job_data>${untrustedData}</job_data> 不可信数据结束。`,
+      content: `任务：分析招聘信息风险。评分 0-100（越高风险越大），置信度只能是高/中/低，证据必须来自输入材料。\n只输出一个 JSON 对象，必须严格使用以下结构，不得增加或删除字段：\n{"overall_score":0,"risk_level":"低","confidence":"中","predicted_role":"岗位名称或null","risk_types":["风险类型"],"evidence":["材料中的具体证据"],"missing_info":["待核实信息"],"questions":["建议追问"],"recommendation":"不超过200字的建议"}\n所有数组字段必须存在；若无风险类型或证据请使用 []。overall_score 大于 60 时 evidence 至少包含一条材料中的具体证据。\n不可信数据开始 <job_data>${untrustedData}</job_data> 不可信数据结束。`,
     },
   ];
 }

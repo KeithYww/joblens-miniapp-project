@@ -1,3 +1,4 @@
+import '../../config/env';
 import type { RiskReport, HrAnalysis, LlmProviderResult } from '../../types';
 import { SiliconFlowProvider } from './siliconflow';
 import { QwenCloudProvider } from './qwencloud';

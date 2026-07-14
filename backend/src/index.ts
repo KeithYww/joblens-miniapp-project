@@ -1,15 +1,9 @@
 import fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import crypto from 'crypto';
-import { existsSync } from 'node:fs';
 import { registerRoutes } from './routes';
 import { initRedis, isRedisAvailable, redis } from './db/redis';
 import { checkDbConnection, getDbHealth, isDbAvailable, prisma } from './db/prisma';
-
-// Local credentials stay in the ignored backend/.env file. Production uses platform-injected variables.
-if (process.env.NODE_ENV !== 'production' && existsSync('.env')) {
-  process.loadEnvFile('.env');
-}
 
 const isProduction = process.env.NODE_ENV === 'production';
 const defaultCorsOrigins = ['http://localhost:5173', 'http://localhost:3000'];
@@ -78,6 +72,7 @@ export async function createServer(): Promise<FastifyInstance> {
     origin: isProduction ? configuredCorsOrigins : [...defaultCorsOrigins, ...configuredCorsOrigins],
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-visitor-id'],
+    exposedHeaders: ['x-joblens-analysis-source', 'x-joblens-ai-provider', 'x-joblens-ai-model', 'x-joblens-ai-latency-ms'],
     maxAge: 600,
   });
 
