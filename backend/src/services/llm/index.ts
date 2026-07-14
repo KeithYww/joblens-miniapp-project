@@ -25,6 +25,8 @@ interface LlmProvider {
 const STRONG_RISK_WORDS = [
   '押金', '保证金', '培训贷', '贷款分期', '扣身份证', '扣毕业证', '先交费', '拉亲友资源', '无薪试岗',
 ];
+const MANAGEMENT_WRAPPER_WORDS = ['储备主管', '储备管理', '管理培训生', '管理岗', '储备干部'];
+const SALES_DUTY_WORDS = ['市场实践', '业绩跟进', '客户开发', '拓展客户', '拉新', '陌拜', '地推'];
 
 const SENSITIVE_EXPRESSIONS: Record<string, string> = {
   '骗子': '信息不透明',
@@ -83,31 +85,35 @@ function applyStrongRiskCorrection(report: RiskReport, jdText: string, hrChatTex
   if (!found) return report;
 
   let adjustment = report.strong_risk_adjustment;
-  let newEvidence = [...report.evidence];
-  
-  for (const word of words) {
-    if (word === '培训贷' || word === '贷款分期') {
-      adjustment += 10;
-      newEvidence.push(`岗位涉及${word}`);
-    } else if (word === '扣身份证' || word === '扣毕业证') {
-      adjustment += 10;
-      newEvidence.push(`岗位涉及${word}`);
-    } else if (word === '无薪试岗') {
-      adjustment += 5;
-      newEvidence.push(`岗位涉及${word}`);
-    } else if (word === '押金' || word === '保证金' || word === '先交费') {
-      adjustment += 5;
-      newEvidence.push(`岗位涉及${word}`);
-    } else if (word === '拉亲友资源') {
-      adjustment += 8;
-      newEvidence.push(`岗位涉及${word}`);
-    }
+  const newEvidence = [...report.evidence];
+  const riskTypes = [...report.risk_types];
+  const hasLoan = words.some(word => word === '培训贷' || word === '贷款分期');
+  const hasDocumentRetention = words.some(word => word === '扣身份证' || word === '扣毕业证');
+  const hasUpfrontFee = words.some(word => word === '押金' || word === '保证金' || word === '先交费');
+  const hasUnpaidTrial = words.includes('无薪试岗');
+  const hasNetworkRecruiting = words.includes('拉亲友资源');
+
+  if (hasLoan) {
+    adjustment = Math.max(adjustment, 20);
+    newEvidence.push(`岗位涉及${words.find(word => word === '培训贷' || word === '贷款分期')}`);
+    riskTypes.push('涉及贷款');
+  } else if (hasDocumentRetention) {
+    adjustment = Math.max(adjustment, 20);
+    newEvidence.push(`岗位涉及${words.find(word => word === '扣身份证' || word === '扣毕业证')}`);
+    riskTypes.push('扣留证件风险');
+  } else if (hasUpfrontFee) {
+    adjustment = Math.max(adjustment, 20);
+    newEvidence.push(`岗位涉及${words.find(word => word === '押金' || word === '保证金' || word === '先交费')}`);
+    riskTypes.push('涉及收费');
+  } else if (hasUnpaidTrial || hasNetworkRecruiting) {
+    adjustment = Math.max(adjustment, 15);
+    newEvidence.push(`岗位涉及${words[0]}`);
+    riskTypes.push(hasUnpaidTrial ? '无薪试岗' : '拉亲友资源');
   }
-  
-  adjustment = Math.min(adjustment, 20);
-  
-  let newScore = report.overall_score + adjustment;
-  newScore = Math.min(newScore, 100);
+
+  let newScore = Math.min(report.overall_score + adjustment, 100);
+  if (hasLoan || hasDocumentRetention) newScore = Math.max(newScore, 81);
+  else if (hasUpfrontFee) newScore = Math.max(newScore, 80);
   
   return {
     ...report,
@@ -115,6 +121,7 @@ function applyStrongRiskCorrection(report: RiskReport, jdText: string, hrChatTex
     risk_level: calculateRiskLevel(newScore),
     strong_risk_adjustment: adjustment,
     evidence: [...new Set(newEvidence)],
+    risk_types: [...new Set(riskTypes)],
   };
 }
 
@@ -132,7 +139,7 @@ function applyEvidenceValidation(report: RiskReport): RiskReport {
   return report;
 }
 
-function applyAntiMisjudgmentRules(report: RiskReport, jdText: string): RiskReport {
+function applyAntiMisjudgmentRules(report: RiskReport, jdText: string, hrChatText?: string): RiskReport {
   if (jdText.includes('销售') && jdText.includes('底薪') && jdText.includes('提成')) {
     if (report.risk_types.includes('管理岗包装销售岗')) {
       const newRiskTypes = report.risk_types.filter(t => t !== '管理岗包装销售岗');
@@ -148,12 +155,32 @@ function applyAntiMisjudgmentRules(report: RiskReport, jdText: string): RiskRepo
     }
   }
   
-  if (jdText.length < 100) {
+  const hasManagementTitle = MANAGEMENT_WRAPPER_WORDS.some(word => jdText.includes(word));
+  const hasExplicitSalesTitle = /销售|客户经理|业务员/.test(jdText);
+  const salesDutyWords = SALES_DUTY_WORDS.filter(word => jdText.includes(word));
+  const hrAvoidsKeyQuestions = /具体到公司|面试时说明|到公司详细|不便透露/.test(hrChatText || '');
+  if (hasManagementTitle && !hasExplicitSalesTitle && salesDutyWords.length >= 2) {
+    const score = Math.max(report.overall_score, hrAvoidsKeyQuestions ? 70 : 65);
+    return {
+      ...report,
+      overall_score: score,
+      risk_level: calculateRiskLevel(score),
+      risk_types: [...new Set([...report.risk_types, '管理岗包装销售岗'])],
+      evidence: [...new Set([...report.evidence, `岗位包含${salesDutyWords.join('、')}等销售职责`])],
+      predicted_role: '销售/客户开发岗',
+      missing_info: [...new Set([...report.missing_info, '是否有个人销售指标', '固定无责底薪'])],
+    };
+  }
+
+  if (jdText.length < 100 && !checkStrongRiskWords(`${jdText} ${hrChatText || ''}`).found) {
     return {
       ...report,
       confidence: '低',
-      overall_score: Math.min(report.overall_score, 60),
-      risk_level: calculateRiskLevel(Math.min(report.overall_score, 60)),
+      overall_score: Math.min(report.overall_score, 30),
+      risk_level: '低',
+      risk_types: [],
+      evidence: ['岗位信息不足，暂不作明确风险判断。'],
+      recommendation: '岗位信息不足，建议补充职责、薪资构成、公司主体和 HR 回复后重新检测。',
     };
   }
   
@@ -165,7 +192,7 @@ function applyAllRules(report: RiskReport, jdText: string, hrChatText?: string):
   
   result = applyStrongRiskCorrection(result, jdText, hrChatText);
   result = applyEvidenceValidation(result);
-  result = applyAntiMisjudgmentRules(result, jdText);
+  result = applyAntiMisjudgmentRules(result, jdText, hrChatText);
   
   result.recommendation = filterSensitiveExpressions(result.recommendation);
   result.evidence = result.evidence.map(e => filterSensitiveExpressions(e));
