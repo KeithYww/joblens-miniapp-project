@@ -21,6 +21,7 @@ export function HomePage() {
   const [captchaRequired, setCaptchaRequired] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
   const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
+  const [captchaAction, setCaptchaAction] = useState<'ocr' | 'analysis'>('analysis');
   const [screenshots, setScreenshots] = useState<Array<{ name: string; dataUrl: string }>>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractStatus, setExtractStatus] = useState('');
@@ -60,14 +61,18 @@ export function HomePage() {
     setError('');
   }, [screenshots.length, isEnglish]);
 
-  const handleExtractScreenshots = useCallback(async () => {
+  const handleExtractScreenshots = useCallback(async (captchaOverride?: string) => {
     if (screenshots.length === 0) return;
     setIsExtracting(true);
     setExtractProgress(12);
     setError('');
     setExtractStatus('');
     try {
-      const result = await api.ocr.extractJob({ images: screenshots.map(item => item.dataUrl), language: locale });
+      const result = await api.ocr.extractJob({
+        images: screenshots.map(item => item.dataUrl),
+        language: locale,
+        captcha_token: captchaOverride || captchaToken || undefined,
+      });
       setExtractProgress(100);
       await new Promise(resolve => window.setTimeout(resolve, 250));
       setJdText(result.jd_text);
@@ -78,11 +83,23 @@ export function HomePage() {
       setExtractStatus(isEnglish ? 'Text extracted. Review and edit the fields below before analyzing.' : '已提取岗位信息，请在下方确认和编辑后再开始检测。');
     } catch (err) {
       setExtractProgress(0);
-      setError(err instanceof Error ? err.message : (isEnglish ? 'Screenshot extraction failed. Please try again later.' : '截图识别失败，请稍后重试。'));
+      if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
+        setCaptchaAction('ocr');
+        setCaptchaRequired(true);
+        setError(isEnglish ? 'Complete verification before extracting these screenshots again.' : '相同截图重复识别，请先完成验证。');
+      } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_FAILED') {
+        setCaptchaAction('ocr');
+        setCaptchaRequired(true);
+        setCaptchaToken('');
+        setCaptchaResetSignal(value => value + 1);
+        setError(isEnglish ? 'Verification expired. Complete it again.' : '验证已失效，请重新完成验证。');
+      } else {
+        setError(err instanceof Error ? err.message : (isEnglish ? 'Screenshot extraction failed. Please try again later.' : '截图识别失败，请稍后重试。'));
+      }
     } finally {
       setIsExtracting(false);
     }
-  }, [screenshots, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish]);
+  }, [screenshots, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish, captchaToken]);
 
   const extractProgressLabel = extractProgress < 45
     ? (isEnglish ? 'Preparing screenshots...' : '正在准备截图...')
@@ -121,9 +138,11 @@ export function HomePage() {
       navigate(`/report/${report.report_id}`);
     } catch (err: unknown) {
       if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
+        setCaptchaAction('analysis');
         setCaptchaRequired(true);
         setError('请求较频繁，请完成验证后再次检测。');
       } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_FAILED') {
+        setCaptchaAction('analysis');
         setCaptchaRequired(true);
         setCaptchaToken('');
         setCaptchaResetSignal(value => value + 1);
@@ -135,6 +154,18 @@ export function HomePage() {
       setIsLoading(false);
     }
   }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, captchaToken, locale, navigate]);
+
+  const handleCaptchaVerify = useCallback((token: string) => {
+    setCaptchaToken(token);
+    if (!token) return;
+    setCaptchaRequired(false);
+    if (captchaAction === 'ocr') {
+      setError('');
+      void handleExtractScreenshots(token);
+      return;
+    }
+    setError(isEnglish ? 'Verification complete. Click Analyze job again.' : '验证已完成，请再次点击“开始检测”。');
+  }, [captchaAction, handleExtractScreenshots, isEnglish]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-warning-50">
@@ -281,14 +312,16 @@ export function HomePage() {
                 <div className="mb-4 flex items-start justify-between gap-3">
                   <div>
                     <h2 id="captcha-dialog-title" className="text-base font-semibold text-gray-900">完成安全验证</h2>
-                    <p className="mt-1 text-sm text-gray-600">验证后可继续提交本次检测。</p>
+                    <p className="mt-1 text-sm text-gray-600">
+                      {captchaAction === 'ocr' ? '验证后可继续识别本次截图。' : '验证后可继续提交本次检测。'}
+                    </p>
                   </div>
                   <button type="button" onClick={() => setCaptchaRequired(false)} aria-label="关闭验证窗口" className="rounded-md p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700">
                     <X className="h-5 w-5" />
                   </button>
                 </div>
                 <TurnstileChallenge
-                  onVerify={setCaptchaToken}
+                  onVerify={handleCaptchaVerify}
                   onError={() => setError('验证加载失败，请刷新页面后重试。')}
                   resetSignal={captchaResetSignal}
                 />
