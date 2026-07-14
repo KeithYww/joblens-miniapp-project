@@ -17,6 +17,7 @@ export interface SubScores {
 
 export interface RiskReport {
   report_id: string;
+  analysis_source?: 'model' | 'fallback';
   overall_score: number;
   risk_level: RiskLevel;
   confidence: Confidence;

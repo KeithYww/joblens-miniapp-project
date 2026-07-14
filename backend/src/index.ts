@@ -72,7 +72,14 @@ export async function createServer(): Promise<FastifyInstance> {
     origin: isProduction ? configuredCorsOrigins : [...defaultCorsOrigins, ...configuredCorsOrigins],
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-visitor-id'],
-    exposedHeaders: ['x-joblens-analysis-source', 'x-joblens-ai-provider', 'x-joblens-ai-model', 'x-joblens-ai-latency-ms'],
+    exposedHeaders: [
+      'x-joblens-analysis-source',
+      'x-joblens-ai-provider',
+      'x-joblens-ai-model',
+      'x-joblens-ai-latency-ms',
+      'x-joblens-quota-remaining',
+      'x-joblens-quota-reset-at',
+    ],
     maxAge: 600,
   });
 

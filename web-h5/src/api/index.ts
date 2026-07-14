@@ -7,6 +7,7 @@ import type {
   ReportFeedbackRequest,
   ScreenshotExtractRequest,
   ScreenshotExtractResult,
+  AiQuotaSnapshot,
   ApiError,
 } from '@/types';
 
@@ -89,6 +90,9 @@ async function fetchApi<T>(
 }
 
 export const api = {
+  quota: {
+    get: async (): Promise<AiQuotaSnapshot> => fetchApi('/api/ai-quota'),
+  },
   ocr: {
     extractJob: async (data: ScreenshotExtractRequest): Promise<ScreenshotExtractResult> => {
       return fetchApi('/api/ocr/extract-job', {

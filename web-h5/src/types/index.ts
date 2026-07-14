@@ -17,6 +17,7 @@ export interface SubScores {
 
 export interface RiskReport {
   report_id: string;
+  analysis_source?: 'model' | 'fallback';
   overall_score: number;
   risk_level: RiskLevel;
   confidence: Confidence;
@@ -64,6 +65,13 @@ export interface ScreenshotExtractResult {
   job_title?: string;
   source_platform?: string;
   hr_chat_text?: string;
+}
+
+export interface AiQuotaSnapshot {
+  available: boolean;
+  ocr: { remaining: number; limit: number };
+  analysis: { remaining: number; limit: number };
+  resetAt: string;
 }
 
 export interface HrAnalysisRequest {

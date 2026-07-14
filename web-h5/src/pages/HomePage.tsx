@@ -4,7 +4,7 @@ import { ArrowRight, ShieldCheck, FileText, MessageSquare, ImageUp, X, CheckCirc
 import { TextInputPanel } from '@/components';
 import { TurnstileChallenge } from '@/components/TurnstileChallenge';
 import { api, ApiRequestError } from '@/api';
-import type { DetectRequest } from '@/types';
+import type { AiQuotaSnapshot, DetectRequest } from '@/types';
 import { LanguageSwitcher, useI18n } from '@/i18n';
 
 export function HomePage() {
@@ -29,6 +29,19 @@ export function HomePage() {
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractStatus, setExtractStatus] = useState('');
   const [extractProgress, setExtractProgress] = useState(0);
+  const [quota, setQuota] = useState<AiQuotaSnapshot | null>(null);
+
+  const refreshQuota = useCallback(async () => {
+    try {
+      setQuota(await api.quota.get());
+    } catch {
+      setQuota(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshQuota();
+  }, [refreshQuota]);
 
   useEffect(() => {
     if (!isExtracting) return;
@@ -86,6 +99,7 @@ export function HomePage() {
       if (!hrChatText && result.hr_chat_text) setHrChatText(result.hr_chat_text);
       setLastExtractedRevision(screenshotsRevision);
       setExtractStatus(isEnglish ? 'Text extracted. Review and edit the fields below before analyzing.' : '已提取岗位信息，请在下方确认和编辑后再开始检测。');
+      void refreshQuota();
     } catch (err) {
       setExtractProgress(0);
       if (err instanceof ApiRequestError && err.code === 'RATE_LIMITED') {
@@ -104,13 +118,20 @@ export function HomePage() {
         setError(isEnglish
           ? 'Screenshot extraction timed out. Try again or enter the job details manually.'
           : '截图识别超时，请重试或手动填写岗位信息。');
+      } else if (err instanceof ApiRequestError && ['USER_AI_QUOTA_EXCEEDED', 'IP_AI_QUOTA_EXCEEDED', 'GLOBAL_AI_BUDGET_EXHAUSTED', 'AI_DISABLED', 'AI_CONTROL_UNAVAILABLE'].includes(err.code)) {
+        setError(isEnglish
+          ? 'AI screenshot extraction is unavailable or today\'s allowance has been used. Enter the job details manually or try again tomorrow.'
+          : '今日 AI 截图识别次数已用完或服务暂不可用，请手动填写岗位信息或明日再试。');
+        void refreshQuota();
+      } else if (err instanceof ApiRequestError && err.code === 'AI_BUSY') {
+        setError(isEnglish ? 'AI is busy. Try again in 10 seconds.' : '当前使用人数较多，请 10 秒后重试。');
       } else {
         setError(err instanceof Error ? err.message : (isEnglish ? 'Screenshot extraction failed. Please try again later.' : '截图识别失败，请稍后重试。'));
       }
     } finally {
       setIsExtracting(false);
     }
-  }, [screenshots, screenshotsRevision, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish, captchaToken]);
+  }, [screenshots, screenshotsRevision, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish, captchaToken, refreshQuota]);
 
   const extractProgressLabel = extractProgress < 45
     ? (isEnglish ? 'Preparing screenshots...' : '正在准备截图...')
@@ -160,13 +181,15 @@ export function HomePage() {
         setCaptchaToken('');
         setCaptchaResetSignal(value => value + 1);
         setError('验证已失效，请重新完成验证。');
+      } else if (err instanceof ApiRequestError && err.code === 'AI_BUSY') {
+        setError(isEnglish ? 'AI is busy. Try again in 10 seconds.' : '当前使用人数较多，请 10 秒后重试。');
       } else {
         setError(err instanceof Error ? err.message : '检测失败，请稍后重试');
       }
     } finally {
       setIsLoading(false);
     }
-  }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, captchaToken, locale, navigate]);
+  }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, captchaToken, locale, navigate, isEnglish]);
 
   const handleCaptchaVerify = useCallback((token: string) => {
     setCaptchaToken(token);
@@ -224,6 +247,11 @@ export function HomePage() {
                 <h2 className="text-sm font-semibold text-gray-800">{isEnglish ? 'Import job screenshots' : '上传岗位截图识别'}</h2>
                 <p className="mt-1 text-xs text-gray-600">{isEnglish ? 'Upload up to 3 job-detail or recruiter-chat screenshots. Review the extracted text before analysis.' : '可上传岗位详情或 HR 聊天截图，最多 3 张。识别后请确认并编辑内容。'}</p>
                 <p className="mt-1 text-xs text-gray-500">{isEnglish ? 'Do not upload IDs, bank cards, or full phone numbers.' : '请勿上传身份证、银行卡、完整手机号等敏感信息。'}</p>
+                {quota?.available && <p className="mt-2 text-xs font-medium text-primary-700">
+                  {isEnglish
+                    ? `AI screenshot extraction today: ${quota.ocr.remaining}/${quota.ocr.limit}`
+                    : `今日 AI 截图识别：${quota.ocr.remaining}/${quota.ocr.limit}`}
+                </p>}
                 <div className="mt-3 flex flex-wrap gap-2">
                   <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-primary-200 bg-white px-3 py-2 text-sm font-medium text-primary-700 hover:bg-primary-50">
                     <ImageUp className="w-4 h-4" />
@@ -407,6 +435,11 @@ export function HomePage() {
               </>
             )}
           </button>
+          {quota?.available && <p className="text-center text-xs text-gray-500">
+            {isEnglish
+              ? `AI job analyses remaining today: ${quota.analysis.remaining}/${quota.analysis.limit}`
+              : `今日剩余 AI 岗位分析：${quota.analysis.remaining}/${quota.analysis.limit}`}
+          </p>}
         </div>
 
         <div className="mt-8 grid grid-cols-3 gap-4">

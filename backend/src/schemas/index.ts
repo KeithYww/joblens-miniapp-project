@@ -74,6 +74,7 @@ const SubScoresSchema = z.object({
 
 export const RiskReportSchema = z.object({
   report_id: z.string().regex(/^rep_[a-z0-9]{12}$/),
+  analysis_source: z.enum(['model', 'fallback']).optional(),
   overall_score: z.number().min(0).max(100),
   risk_level: RiskLevelSchema,
   confidence: ConfidenceSchema,

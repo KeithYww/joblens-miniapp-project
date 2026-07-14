@@ -4,6 +4,7 @@ import type {
   ApiError,
   HrAnalysis,
   InterviewFeedbackRequest,
+  LlmProviderResult,
   ReportFeedbackRequest,
   RiskReport,
   VisitorDataDeleteResult,
@@ -20,7 +21,7 @@ import {
 } from '../schemas';
 import { isDbAvailable, prisma, runDbOperation } from '../db/prisma';
 import { isRedisAvailable, redis } from '../db/redis';
-import { createLlmProviderWithFallback } from '../services/llm';
+import { createLlmProviderWithFallback, RuleBasedProvider } from '../services/llm';
 import {
   checkRateLimit,
   incrementRateLimit,
@@ -29,8 +30,23 @@ import {
 } from '../services/rateLimit';
 import { startDataRetentionScheduler } from '../services/dataRetention';
 import { extractJobFromScreenshots, ScreenshotExtractionTimeoutError } from '../services/screenshotExtraction';
+import {
+  acquireAiConcurrency,
+  getAiQuotaSnapshot,
+  refundAiQuota,
+  releaseAiConcurrency,
+  reserveAiQuota,
+  type AiQuotaDenialReason,
+} from '../services/aiCostControl';
+import {
+  calculateOcrCacheKey,
+  getCachedScreenshotExtraction,
+  setCachedScreenshotExtraction,
+} from '../services/screenshotCache';
+import { LlmConfigurationError } from '../services/llm/common';
 
 const llmProvider = createLlmProviderWithFallback();
+const ruleProvider = new RuleBasedProvider();
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REPORT_CACHE_TTL_MS = 10 * MINUTE_MS;
@@ -93,6 +109,71 @@ function requireVisitorId(request: FastifyRequest, reply: FastifyReply): string 
     return null;
   }
   return parsed.data;
+}
+
+class AiBusyError extends Error {
+  constructor() {
+    super('AI concurrency limit reached');
+    this.name = 'AiBusyError';
+  }
+}
+
+function setQuotaHeaders(reply: FastifyReply, remaining: number, resetAt: string): void {
+  reply.headers({
+    'x-joblens-quota-remaining': String(Math.max(0, remaining)),
+    'x-joblens-quota-reset-at': resetAt,
+  });
+}
+
+async function runControlledTextAnalysis(params: {
+  visitorId: string;
+  ip: string;
+  run: () => Promise<LlmProviderResult>;
+  fallback: () => Promise<LlmProviderResult>;
+}): Promise<{ result: LlmProviderResult; source: 'model' | 'fallback'; remaining: number; resetAt: string; fallbackReason?: AiQuotaDenialReason }> {
+  if (llmProvider.name === 'rule-based') {
+    const quota = await getAiQuotaSnapshot(params.visitorId);
+    return {
+      result: await params.fallback(),
+      source: 'fallback',
+      remaining: quota.analysis.remaining,
+      resetAt: quota.resetAt,
+      fallbackReason: 'AI_DISABLED',
+    };
+  }
+  const quota = await reserveAiQuota({ visitorId: params.visitorId, ip: params.ip, operation: 'analysis' });
+  if (!quota.allowed) {
+    return {
+      result: await params.fallback(),
+      source: 'fallback',
+      remaining: quota.remaining,
+      resetAt: quota.resetAt,
+      fallbackReason: quota.reason,
+    };
+  }
+
+  const lease = await acquireAiConcurrency('analysis');
+  if (!lease) {
+    await refundAiQuota(quota.reservation);
+    throw new AiBusyError();
+  }
+
+  try {
+    const result = await params.run();
+    const source = result.provider.startsWith('fallback(') ? 'fallback' : 'model';
+    return { result, source, remaining: quota.reservation.remaining, resetAt: quota.reservation.resetAt };
+  } finally {
+    await releaseAiConcurrency(lease);
+  }
+}
+
+function aiQuotaErrorResponse(reason: AiQuotaDenialReason): { status: 429 | 503; message: string } {
+  if (reason === 'USER_AI_QUOTA_EXCEEDED') return { status: 429, message: '今日 AI 使用次数已用完，请明日再试。' };
+  if (reason === 'IP_AI_QUOTA_EXCEEDED') return { status: 429, message: '当前网络今日 AI 使用次数较多，请明日再试。' };
+  if (reason === 'GLOBAL_AI_BUDGET_EXHAUSTED' || reason === 'AI_DISABLED') {
+    return { status: 503, message: '今日 AI 服务额度已用完，请手动填写或明日再试。' };
+  }
+  return { status: 503, message: 'AI 费用控制服务暂时不可用，请稍后重试。' };
 }
 
 function setBoundedEntry<T>(
@@ -268,10 +349,12 @@ function toRiskReport(report: {
   questions: unknown;
   recommendation: string;
   disclaimer: string;
+  provider: string | null;
   created_at: Date;
 }): RiskReport {
   return {
     report_id: report.report_id,
+    analysis_source: report.provider === 'rule-based' || report.provider?.startsWith('fallback(') ? 'fallback' : 'model',
     overall_score: report.overall_score,
     risk_level: report.risk_level as RiskReport['risk_level'],
     confidence: report.confidence as RiskReport['confidence'],
@@ -451,12 +534,23 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const redisRequired = process.env.REQUIRE_REDIS
       ? process.env.REQUIRE_REDIS === 'true'
       : production;
-    if ((databaseRequired && !isDbAvailable()) || (redisRequired && !isRedisAvailable())) {
+    const pathname = request.url.split('?')[0];
+    const aiRouteCanFailClosed = pathname === '/api/reports/detect'
+      || pathname === '/api/ocr/extract-job'
+      || pathname === '/api/hr-analysis'
+      || /^\/api\/reports\/[^/]+\/hr-analysis$/.test(pathname);
+    if ((databaseRequired && !isDbAvailable()) || (redisRequired && !isRedisAvailable() && !aiRouteCanFailClosed)) {
       return reply.status(503).send(buildErrorResponse(
         'DEPENDENCY_UNAVAILABLE',
         '服务依赖暂时不可用，请稍后重试。'
       ));
     }
+  });
+
+  app.get('/api/ai-quota', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    return reply.send(await getAiQuotaSnapshot(visitorId));
   });
 
   app.post('/api/reports/detect', async (request, reply) => {
@@ -486,20 +580,29 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
     const cached = await getReportCache(inputHash, visitorId);
     if (cached) {
+      const quota = await getAiQuotaSnapshot(visitorId);
       storeReport(cached, visitorId, inputHash);
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 200, aiCalled: false });
       reply.header('x-joblens-analysis-source', 'cache');
+      setQuotaHeaders(reply, quota.analysis.remaining, quota.resetAt);
       return reply.send(localizeReportForResponse(cached, parsed.data.language));
     }
 
     try {
       const startedAt = Date.now();
-      const llmResult = await llmProvider.analyzeJobRisk(parsed.data);
+      const controlled = await runControlledTextAnalysis({
+        visitorId,
+        ip: request.ip,
+        run: () => llmProvider.analyzeJobRisk(parsed.data),
+        fallback: () => ruleProvider.analyzeJobRisk(parsed.data),
+      });
+      const llmResult = controlled.result;
       const report = llmResult.parsedJson as RiskReport;
       report.report_id = generateId('rep');
       report.created_at = new Date().toISOString();
       const now = new Date();
-      const source = llmResult.provider.startsWith('fallback(') ? 'fallback' : 'model';
+      const source = controlled.source;
+      report.analysis_source = source;
 
       reply.headers({
         'x-joblens-analysis-source': source,
@@ -507,6 +610,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         'x-joblens-ai-model': llmResult.model,
         'x-joblens-ai-latency-ms': String(llmResult.latencyMs),
       });
+      setQuotaHeaders(reply, controlled.remaining, controlled.resetAt);
 
       if (isDbAvailable()) {
         await runDbOperation(() => prisma.jobReport.create({
@@ -546,9 +650,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       }
       await setReportCache(inputHash, report, visitorId);
       storeReport(report, visitorId, inputHash);
-      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: true, provider: llmResult.provider, model: llmResult.model });
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: source === 'model', provider: llmResult.provider, model: llmResult.model });
       return reply.send(localizeReportForResponse(report, parsed.data.language));
     } catch (error) {
+      if (error instanceof AiBusyError) {
+        return reply.status(429).send(buildErrorResponse(
+          'AI_BUSY',
+          '当前使用人数较多，请 10 秒后重试。',
+          undefined,
+          undefined,
+          new Date(Date.now() + 10_000).toISOString(),
+        ));
+      }
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: '报告生成失败' });
       logInternalFailure(request, 'report_generation', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));
@@ -567,17 +680,66 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     const inputHash = calculateWriteHash(visitorId, apiPath, { image_hashes: parsed.data.images.map(image => crypto.createHash('sha256').update(image).digest('hex')) });
     if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
+
+    const cacheKey = calculateOcrCacheKey(parsed.data.images, parsed.data.language);
+    const cached = await getCachedScreenshotExtraction(cacheKey);
+    if (cached) {
+      const quota = await getAiQuotaSnapshot(visitorId);
+      reply.headers({
+        'x-joblens-analysis-source': 'cache',
+        'x-joblens-ai-provider': cached.provider,
+        'x-joblens-ai-model': cached.model,
+      });
+      setQuotaHeaders(reply, quota.ocr.remaining, quota.resetAt);
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: false, provider: cached.provider, model: cached.model });
+      return reply.send(cached.result);
+    }
+
+    const quota = await reserveAiQuota({ visitorId, ip: request.ip, operation: 'ocr' });
+    if (!quota.allowed) {
+      const response = aiQuotaErrorResponse(quota.reason);
+      setQuotaHeaders(reply, quota.remaining, quota.resetAt);
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: response.status, errorCode: quota.reason, errorMessage: response.message, rateLimited: response.status === 429 });
+      return reply.status(response.status).send(buildErrorResponse(
+        quota.reason,
+        response.message,
+        undefined,
+        undefined,
+        new Date(Date.now() + quota.retryAfter * 1_000).toISOString(),
+      ));
+    }
+
+    const lease = await acquireAiConcurrency('ocr');
+    if (!lease) {
+      await refundAiQuota(quota.reservation);
+      return reply.status(429).send(buildErrorResponse(
+        'AI_BUSY',
+        '当前使用人数较多，请 10 秒后重试。',
+        undefined,
+        undefined,
+        new Date(Date.now() + 10_000).toISOString(),
+      ));
+    }
+
     try {
       const extraction = await extractJobFromScreenshots(parsed.data.images, parsed.data.language);
+      await setCachedScreenshotExtraction(cacheKey, {
+        result: extraction.result,
+        model: extraction.model,
+        provider: extraction.provider,
+        createdAt: new Date().toISOString(),
+      });
       reply.headers({
         'x-joblens-analysis-source': 'model',
         'x-joblens-ai-provider': extraction.provider,
         'x-joblens-ai-model': extraction.model,
         'x-joblens-ai-latency-ms': String(extraction.latencyMs),
       });
+      setQuotaHeaders(reply, quota.reservation.remaining, quota.reservation.resetAt);
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: true, provider: extraction.provider, model: extraction.model, latencyMs: extraction.latencyMs });
       return reply.send(extraction.result);
     } catch (error) {
+      if (error instanceof LlmConfigurationError) await refundAiQuota(quota.reservation);
       const timedOut = error instanceof ScreenshotExtractionTimeoutError;
       const httpStatus = timedOut ? 504 : 502;
       const errorCode = timedOut ? 'OCR_TIMEOUT' : 'OCR_UNAVAILABLE';
@@ -587,6 +749,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(httpStatus).send(buildErrorResponse(errorCode, timedOut
         ? '截图识别超时，请重试或手动填写。'
         : '截图识别服务暂时不可用，请稍后重试或手动填写。'));
+    } finally {
+      await releaseAiConcurrency(lease);
     }
   });
 
@@ -668,7 +832,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
 
     try {
-      const llmResult = await llmProvider.analyzeHrReply({ ...parsed.data, report_id: reportId });
+      const input = { ...parsed.data, report_id: reportId };
+      const controlled = await runControlledTextAnalysis({
+        visitorId,
+        ip: request.ip,
+        run: () => llmProvider.analyzeHrReply(input),
+        fallback: () => ruleProvider.analyzeHrReply(input),
+      });
+      const llmResult = controlled.result;
       const analysis = llmResult.parsedJson as HrAnalysis;
       analysis.hr_analysis_id = generateId('hra');
       analysis.report_id = reportId;
@@ -693,8 +864,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         } }));
       }
       setBoundedEntry(hrAnalysisStore, analysis.hr_analysis_id, { value: analysis, ownerId: visitorId, reportId, expiresAt: Date.now() + REPORT_TTL_MS }, HR_ANALYSIS_STORE_MAX);
+      reply.header('x-joblens-analysis-source', controlled.source);
+      setQuotaHeaders(reply, controlled.remaining, controlled.resetAt);
       return reply.send(analysis);
     } catch (error) {
+      if (error instanceof AiBusyError) {
+        return reply.status(429).send(buildErrorResponse('AI_BUSY', '当前使用人数较多，请 10 秒后重试。', undefined, undefined, new Date(Date.now() + 10_000).toISOString()));
+      }
       logInternalFailure(request, 'linked_hr_analysis', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));
     }
@@ -715,7 +891,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
 
     try {
-      const llmResult = await llmProvider.analyzeHrReply(parsed.data);
+      const controlled = await runControlledTextAnalysis({
+        visitorId,
+        ip: request.ip,
+        run: () => llmProvider.analyzeHrReply(parsed.data),
+        fallback: () => ruleProvider.analyzeHrReply(parsed.data),
+      });
+      const llmResult = controlled.result;
       const analysis = llmResult.parsedJson as HrAnalysis;
       analysis.hr_analysis_id = generateId('hra');
       analysis.report_id = parsed.data.report_id;
@@ -740,8 +922,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         } }));
       }
       setBoundedEntry(hrAnalysisStore, analysis.hr_analysis_id, { value: analysis, ownerId: visitorId, reportId: parsed.data.report_id, expiresAt: Date.now() + REPORT_TTL_MS }, HR_ANALYSIS_STORE_MAX);
+      reply.header('x-joblens-analysis-source', controlled.source);
+      setQuotaHeaders(reply, controlled.remaining, controlled.resetAt);
       return reply.send(analysis);
     } catch (error) {
+      if (error instanceof AiBusyError) {
+        return reply.status(429).send(buildErrorResponse('AI_BUSY', '当前使用人数较多，请 10 秒后重试。', undefined, undefined, new Date(Date.now() + 10_000).toISOString()));
+      }
       logInternalFailure(request, 'standalone_hr_analysis', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));
     }

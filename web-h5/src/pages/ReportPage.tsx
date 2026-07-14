@@ -190,6 +190,14 @@ export function ReportPage() {
             />
           </div>
         )}
+        {report.analysis_source === 'fallback' && (
+          <div className="rounded-xl bg-warning-50 border border-warning-200 p-4">
+            <p className="text-sm text-warning-700">
+              <AlertCircle className="w-4 h-4 inline mr-1" />
+              当前报告由基础规则检测生成，未使用 AI 深度分析。
+            </p>
+          </div>
+        )}
         {report.confidence === '低' && (
           <div className="rounded-xl bg-warning-50 border border-warning-200 p-4">
             <p className="text-sm text-warning-700">
