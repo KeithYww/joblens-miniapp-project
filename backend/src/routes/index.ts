@@ -126,6 +126,7 @@ function calculateInputHash(
     job_title?: string;
     jd_text: string;
     hr_chat_text?: string;
+    language?: 'zh-CN' | 'en-US';
   },
   ownerId: string
 ): string {
@@ -136,6 +137,7 @@ function calculateInputHash(
     job_title: input.job_title || '',
     jd_text: input.jd_text,
     hr_chat_text: input.hr_chat_text || '',
+    language: input.language || 'zh-CN',
   })).digest('hex');
 }
 

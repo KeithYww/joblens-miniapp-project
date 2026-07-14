@@ -5,9 +5,12 @@ import { TextInputPanel } from '@/components';
 import { TurnstileChallenge } from '@/components/TurnstileChallenge';
 import { api, ApiRequestError } from '@/api';
 import type { DetectRequest } from '@/types';
+import { LanguageSwitcher, useI18n } from '@/i18n';
 
 export function HomePage() {
   const navigate = useNavigate();
+  const { locale, t } = useI18n();
+  const isEnglish = locale === 'en-US';
   const [sourcePlatform, setSourcePlatform] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [jobTitle, setJobTitle] = useState('');
@@ -40,6 +43,7 @@ export function HomePage() {
       jd_text: jdText,
       hr_chat_text: hrChatText || undefined,
       captcha_token: captchaToken || undefined,
+      language: locale,
     };
 
     try {
@@ -70,15 +74,16 @@ export function HomePage() {
             <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center">
               <ShieldCheck className="w-5 h-5 text-white" />
             </div>
-            <span className="text-lg font-bold text-gray-800">职镜 JobLens</span>
+            <span className="text-lg font-bold text-gray-800">{t('brand')}</span>
           </div>
           <nav className="flex items-center gap-4">
             <a href="/privacy" className="text-sm text-gray-600 hover:text-primary-600">
-              隐私说明
+              {t('privacy')}
             </a>
             <a href="/disclaimer" className="text-sm text-gray-600 hover:text-primary-600">
-              免责声明
+              {t('disclaimer')}
             </a>
+            <LanguageSwitcher />
           </nav>
         </div>
       </header>
@@ -86,10 +91,10 @@ export function HomePage() {
       <main className="max-w-2xl mx-auto px-4 py-8">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-800 mb-3">
-            岗位风险智能检测
+            {isEnglish ? 'Job Risk Analysis' : '岗位风险智能检测'}
           </h1>
           <p className="text-gray-500">
-            粘贴岗位 JD 和 HR 聊天记录，智能识别潜在风险
+            {isEnglish ? 'Paste a job description and recruiter conversation to identify potential risks.' : '粘贴岗位 JD 和 HR 聊天记录，智能识别潜在风险'}
           </p>
         </div>
 
@@ -97,26 +102,26 @@ export function HomePage() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-sm font-medium text-gray-700 mb-2 block">
-                招聘平台（选填）
+                {isEnglish ? 'Hiring platform (optional)' : '招聘平台（选填）'}
               </label>
               <input
                 type="text"
                 value={sourcePlatform}
                 onChange={(e) => setSourcePlatform(e.target.value)}
-                placeholder="如：BOSS直聘"
+                placeholder={isEnglish ? 'e.g. LinkedIn' : '如：BOSS直聘'}
                 className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary-500 focus:ring-primary-200 focus:outline-none focus:ring-2"
                 maxLength={30}
               />
             </div>
             <div>
               <label className="text-sm font-medium text-gray-700 mb-2 block">
-                公司名称（选填）
+                {isEnglish ? 'Company (optional)' : '公司名称（选填）'}
               </label>
               <input
                 type="text"
                 value={companyName}
                 onChange={(e) => setCompanyName(e.target.value)}
-                placeholder="如：某某科技"
+                placeholder={isEnglish ? 'e.g. Acme Technology' : '如：某某科技'}
                 className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary-500 focus:ring-primary-200 focus:outline-none focus:ring-2"
                 maxLength={80}
               />
@@ -125,21 +130,21 @@ export function HomePage() {
 
           <div>
             <label className="text-sm font-medium text-gray-700 mb-2 block">
-              岗位名称（选填）
+              {isEnglish ? 'Job title (optional)' : '岗位名称（选填）'}
             </label>
             <input
               type="text"
               value={jobTitle}
               onChange={(e) => setJobTitle(e.target.value)}
-              placeholder="如：储备主管"
+              placeholder={isEnglish ? 'e.g. Frontend Engineer' : '如：储备主管'}
               className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary-500 focus:ring-primary-200 focus:outline-none focus:ring-2"
               maxLength={80}
             />
           </div>
 
           <TextInputPanel
-            label="岗位 JD"
-            placeholder="请粘贴岗位描述、职责、要求、薪资等信息..."
+            label={isEnglish ? 'Job description' : '岗位 JD'}
+            placeholder={isEnglish ? 'Paste responsibilities, qualifications, compensation, and other details...' : '请粘贴岗位描述、职责、要求、薪资等信息...'}
             value={jdText}
             onChange={setJdText}
             maxLength={8000}
@@ -147,8 +152,8 @@ export function HomePage() {
           />
 
           <TextInputPanel
-            label="HR 聊天记录（选填）"
-            placeholder="请粘贴您与 HR 的聊天记录..."
+            label={isEnglish ? 'Recruiter conversation (optional)' : 'HR 聊天记录（选填）'}
+            placeholder={isEnglish ? 'Paste your conversation with the recruiter...' : '请粘贴您与 HR 的聊天记录...'}
             value={hrChatText}
             onChange={setHrChatText}
             maxLength={8000}
@@ -156,8 +161,8 @@ export function HomePage() {
 
           <div className="text-xs text-gray-400 bg-gray-50 rounded-lg p-3">
             <p>
-              <strong className="text-gray-600">隐私提示：</strong>
-              请勿上传身份证、银行卡、完整手机号等敏感信息。检测结果仅供求职决策参考，不构成法律认定。
+              <strong className="text-gray-600">{isEnglish ? 'Privacy notice: ' : '隐私提示：'}</strong>
+              {isEnglish ? 'Do not upload IDs, bank cards, or full phone numbers. Results are for job-search decisions only and are not legal advice.' : '请勿上传身份证、银行卡、完整手机号等敏感信息。检测结果仅供求职决策参考，不构成法律认定。'}
             </p>
           </div>
 
@@ -183,12 +188,12 @@ export function HomePage() {
             {isLoading ? (
               <>
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                <span>检测中...</span>
+                <span>{isEnglish ? 'Analyzing...' : '检测中...'}</span>
               </>
             ) : (
               <>
                 <FileText className="w-5 h-5" />
-                <span>开始检测</span>
+                <span>{isEnglish ? 'Analyze job' : '开始检测'}</span>
                 <ArrowRight className="w-5 h-5" />
               </>
             )}
@@ -200,22 +205,22 @@ export function HomePage() {
             <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center mx-auto mb-2">
               <ShieldCheck className="w-5 h-5 text-primary-600" />
             </div>
-            <h3 className="text-sm font-semibold text-gray-700">风险识别</h3>
-            <p className="text-xs text-gray-500 mt-1">智能检测岗位风险</p>
+            <h3 className="text-sm font-semibold text-gray-700">{isEnglish ? 'Risk signals' : '风险识别'}</h3>
+            <p className="text-xs text-gray-500 mt-1">{isEnglish ? 'Spot job risks early' : '智能检测岗位风险'}</p>
           </div>
           <div className="bg-white rounded-xl border border-gray-100 p-4 text-center">
             <div className="w-10 h-10 rounded-full bg-warning-100 flex items-center justify-center mx-auto mb-2">
               <MessageSquare className="w-5 h-5 text-warning-600" />
             </div>
-            <h3 className="text-sm font-semibold text-gray-700">追问建议</h3>
-            <p className="text-xs text-gray-500 mt-1">生成关键追问问题</p>
+            <h3 className="text-sm font-semibold text-gray-700">{isEnglish ? 'Questions to ask' : '追问建议'}</h3>
+            <p className="text-xs text-gray-500 mt-1">{isEnglish ? 'Generate key follow-ups' : '生成关键追问问题'}</p>
           </div>
           <div className="bg-white rounded-xl border border-gray-100 p-4 text-center">
             <div className="w-10 h-10 rounded-full bg-success-100 flex items-center justify-center mx-auto mb-2">
               <FileText className="w-5 h-5 text-success-600" />
             </div>
-            <h3 className="text-sm font-semibold text-gray-700">面试反馈</h3>
-            <p className="text-xs text-gray-500 mt-1">匿名反馈面试结果</p>
+            <h3 className="text-sm font-semibold text-gray-700">{isEnglish ? 'Interview feedback' : '面试反馈'}</h3>
+            <p className="text-xs text-gray-500 mt-1">{isEnglish ? 'Share outcomes anonymously' : '匿名反馈面试结果'}</p>
           </div>
         </div>
       </main>
@@ -223,7 +228,7 @@ export function HomePage() {
       <footer className="mt-12 py-6 border-t border-gray-100">
         <div className="max-w-2xl mx-auto px-4 text-center">
           <p className="text-xs text-gray-400">
-            职镜 JobLens - 帮助求职者识别岗位风险
+            {isEnglish ? 'JobLens - helping candidates identify job risks' : '职镜 JobLens - 帮助求职者识别岗位风险'}
           </p>
         </div>
       </footer>

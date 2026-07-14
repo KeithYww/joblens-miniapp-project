@@ -49,6 +49,7 @@ export interface DetectRequest {
   jd_text: string;
   hr_chat_text?: string;
   captcha_token?: string;
+  language?: 'zh-CN' | 'en-US';
 }
 
 export interface HrAnalysisRequest {

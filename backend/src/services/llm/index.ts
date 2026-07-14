@@ -12,6 +12,7 @@ interface LlmProvider {
     job_title?: string;
     jd_text: string;
     hr_chat_text?: string;
+    language?: 'zh-CN' | 'en-US';
   }): Promise<LlmProviderResult>;
   analyzeHrReply(input: {
     report_id?: string;

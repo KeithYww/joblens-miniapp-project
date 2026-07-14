@@ -106,6 +106,7 @@ export const DetectRequestSchema = z.object({
   jd_text: z.string().min(50).max(8000),
   hr_chat_text: z.string().max(8000).optional(),
   captcha_token: z.string().optional(),
+  language: z.enum(['zh-CN', 'en-US']).optional(),
 });
 
 export const HrAnalysisRequestSchema = z.object({
