@@ -27,6 +27,7 @@ const STRONG_RISK_WORDS = [
 ];
 const MANAGEMENT_WRAPPER_WORDS = ['储备主管', '储备管理', '管理培训生', '管理岗', '储备干部'];
 const SALES_DUTY_WORDS = ['市场实践', '业绩跟进', '客户开发', '拓展客户', '拉新', '陌拜', '地推'];
+const PENSION_BUSINESS_WORDS = ['养老事业部', '养老业务部', '保险事业部', '金融事业部'];
 
 const SENSITIVE_EXPRESSIONS: Record<string, string> = {
   '骗子': '信息不透明',
@@ -76,6 +77,10 @@ function convertMissingToQuestions(missingInfo: string[]): string[] {
 function checkStrongRiskWords(text: string): { found: boolean; words: string[] } {
   const foundWords = STRONG_RISK_WORDS.filter(word => text.includes(word));
   return { found: foundWords.length > 0, words: foundWords };
+}
+
+function hasHighSalaryRange(text: string): boolean {
+  return /(?:2[5-9]|[3-9]\d)\s*(?:[-~～至]\s*(?:[3-9]\d|1\d{2}))?\s*[kK]/.test(text);
 }
 
 function applyStrongRiskCorrection(report: RiskReport, jdText: string, hrChatText?: string): RiskReport {
@@ -169,6 +174,40 @@ function applyAntiMisjudgmentRules(report: RiskReport, jdText: string, hrChatTex
       evidence: [...new Set([...report.evidence, `岗位包含${salesDutyWords.join('、')}等销售职责`])],
       predicted_role: '销售/客户开发岗',
       missing_info: [...new Set([...report.missing_info, '是否有个人销售指标', '固定无责底薪'])],
+    };
+  }
+
+  const hasPensionBusiness = PENSION_BUSINESS_WORDS.some(word => jdText.includes(word));
+  const hasManagementAssistantTitle = /辅助管理|管理助理|部门管理/.test(jdText);
+  const hasLowExperienceBarrier = /大专|1\s*[-—至]\s*3年|1-3年/.test(jdText);
+  const hasVagueAdministrativeDuties = /日常管理.*流程|表单.*管理|沟通.*协调/.test(jdText);
+  if (hasPensionBusiness && hasManagementAssistantTitle && hasHighSalaryRange(jdText) && hasLowExperienceBarrier && hasVagueAdministrativeDuties) {
+    const score = Math.max(report.overall_score, 65);
+    const missingInfo = [
+      '是否涉及保险或金融产品销售、客户开发、代理人招募',
+      '固定无责底薪、提成规则与个人业绩指标',
+      '招聘公司名称、劳动合同主体与社保缴纳主体',
+    ];
+    const questions = [
+      '该岗位是否需要销售保险或金融产品、开发客户或招募代理人？请明确写入 offer。',
+      '30-60K 和 16 薪中，固定无责底薪、提成及个人业绩指标分别是多少？',
+      '请提供招聘公司全称、劳动合同主体和社保缴纳主体。',
+    ];
+    return {
+      ...report,
+      overall_score: score,
+      risk_level: calculateRiskLevel(score),
+      confidence: '低',
+      risk_types: [...new Set([...report.risk_types, '岗位职责与薪资不匹配', '疑似业务性质需确认'])],
+      evidence: [...new Set([
+        ...report.evidence,
+        '岗位名称为事业部辅助管理，但职责仅描述笼统的表单和日常管理流程',
+        '标注较高薪资与16薪，但要求大专及1-3年经验，未说明固定薪资和业务边界',
+      ])],
+      predicted_role: '养老业务相关岗（需核实具体职责）',
+      missing_info: [...new Set([...report.missing_info, ...missingInfo])],
+      questions: [...new Set([...report.questions, ...questions])].slice(0, 8),
+      recommendation: '岗位的薪资、职责与业务边界信息不匹配。建议先书面确认是否涉及保险/金融产品销售、客户开发或代理人招募，以及固定无责底薪和合同主体，再决定是否面试。',
     };
   }
 

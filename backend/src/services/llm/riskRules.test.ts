@@ -48,6 +48,19 @@ test('raises management-role packaging with multiple concealed sales duties', ()
   assert.equal(output.risk_types.includes('管理岗包装销售岗'), true);
 });
 
+test('flags pension-business management assistant roles with high pay and vague duties for verification', () => {
+  const output = applyAllRules(
+    report(42),
+    '纯外企 16薪 养老事业部辅助管理（急招）。上海30-60K，16薪，1-3年，大专。职责：了解负责部门日常管理作业流程，处理相关表单的管理能力；具备沟通协调能力。'
+  );
+  assert.equal(output.risk_level, '高');
+  assert.ok(output.overall_score >= 65);
+  assert.equal(output.risk_types.includes('岗位职责与薪资不匹配'), true);
+  assert.equal(output.risk_types.includes('疑似业务性质需确认'), true);
+  assert.match(output.questions.join('\n'), /保险或金融产品/);
+  assert.match(output.questions.join('\n'), /固定无责底薪/);
+});
+
 test('treats training loans as critical risk', () => {
   const output = applyAllRules(
     report(55),
