@@ -28,7 +28,7 @@ export class SiliconFlowProvider {
 
   constructor(apiKey?: string, model?: string) {
     this.apiKey = requireApiKey(this.name, apiKey?.trim() || process.env.SILICONFLOW_API_KEY?.trim(), ['SILICONFLOW_API_KEY']);
-    this.model = model?.trim() || process.env.SILICONFLOW_MODEL?.trim() || 'deepseek-chat';
+    this.model = model?.trim() || process.env.SILICONFLOW_MODEL?.trim() || 'Qwen/Qwen2.5-72B-Instruct';
   }
 
   async analyzeJobRisk(input: JobRiskInput): Promise<LlmProviderResult> {
