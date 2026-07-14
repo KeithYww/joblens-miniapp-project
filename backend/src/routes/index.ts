@@ -141,6 +141,17 @@ function calculateInputHash(
   })).digest('hex');
 }
 
+function localizeReportForResponse(report: RiskReport, language?: 'zh-CN' | 'en-US') {
+  if (language !== 'en-US') return report;
+  const riskLevels = { '低': 'Low', '中': 'Medium', '高': 'High', '极高': 'Critical' } as const;
+  const confidences = { '低': 'Low', '中': 'Medium', '高': 'High' } as const;
+  return {
+    ...report,
+    risk_level: riskLevels[report.risk_level],
+    confidence: confidences[report.confidence],
+  };
+}
+
 function calculateWriteHash(ownerId: string, apiPath: string, body: unknown): string {
   const protectedBody = body && typeof body === 'object'
     ? { ...(body as Record<string, unknown>), captcha_token: undefined }
@@ -464,7 +475,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       storeReport(cached, visitorId, inputHash);
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 200, aiCalled: false });
       reply.header('x-joblens-analysis-source', 'cache');
-      return reply.send(cached);
+      return reply.send(localizeReportForResponse(cached, parsed.data.language));
     }
 
     try {
@@ -522,7 +533,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await setReportCache(inputHash, report, visitorId);
       storeReport(report, visitorId, inputHash);
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: true, provider: llmResult.provider, model: llmResult.model });
-      return reply.send(report);
+      return reply.send(localizeReportForResponse(report, parsed.data.language));
     } catch (error) {
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: '报告生成失败' });
       logInternalFailure(request, 'report_generation', error);
