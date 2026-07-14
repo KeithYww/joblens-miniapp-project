@@ -29,9 +29,12 @@
 - 匿名反馈页
 - 隐私说明与免责声明
 
-P1 增强：
+已实现增强：
 
-- 上传岗位截图识别
+- 上传岗位截图识别与确认编辑（1-3 张 PNG/JPEG/WebP，单张最大 2MB）
+
+后续增强：
+
 - 自建 OCR 服务
 - Web/H5 分享报告页
 
@@ -199,6 +202,7 @@ joblens-miniapp-project/
 | `/api/reports/:id` | GET | 获取报告详情 |
 | `/api/reports/:id` | DELETE | 删除报告 |
 | `/api/hr-analysis` | POST | HR 回复分析 |
+| `/api/ocr/extract-job` | POST | 岗位截图 OCR 提取与确认编辑前回填 |
 
 详细文档: [docs/19-api-contract.md](docs/19-api-contract.md)
 
