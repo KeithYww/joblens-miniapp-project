@@ -17,7 +17,7 @@ const RATE_LIMIT_CONFIG = {
   },
   inputHash: {
     threshold: 2,
-    window: 3600,
+    window: 600,
   },
   captchaExempt: {
     duration: 1800,
@@ -36,7 +36,7 @@ interface RateLimitEntry {
 const memoryCache = new Map<string, RateLimitEntry>();
 const MAX_MEMORY_ENTRIES = 10_000;
 const MAX_CAPTCHA_TOKEN_LENGTH = 2_048;
-const RATE_LIMIT_NAMESPACE = 'ratelimit:v2';
+const RATE_LIMIT_NAMESPACE = 'ratelimit:v3';
 
 function stableKeyPart(value: unknown, fallback: string): string {
   const normalized = typeof value === 'string' ? value.trim().slice(0, 4_096) : '';

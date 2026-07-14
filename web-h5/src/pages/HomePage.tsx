@@ -22,6 +22,7 @@ export function HomePage() {
   const [captchaToken, setCaptchaToken] = useState('');
   const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
   const [captchaAction, setCaptchaAction] = useState<'ocr' | 'analysis'>('analysis');
+  const [rateLimitNotice, setRateLimitNotice] = useState<{ message: string; retryAfter?: string } | null>(null);
   const [screenshots, setScreenshots] = useState<Array<{ name: string; dataUrl: string }>>([]);
   const [screenshotsRevision, setScreenshotsRevision] = useState(0);
   const [lastExtractedRevision, setLastExtractedRevision] = useState(-1);
@@ -87,7 +88,9 @@ export function HomePage() {
       setExtractStatus(isEnglish ? 'Text extracted. Review and edit the fields below before analyzing.' : '已提取岗位信息，请在下方确认和编辑后再开始检测。');
     } catch (err) {
       setExtractProgress(0);
-      if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
+      if (err instanceof ApiRequestError && err.code === 'RATE_LIMITED') {
+        setRateLimitNotice({ message: err.message, retryAfter: err.retryAfter });
+      } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
         setCaptchaAction('ocr');
         setCaptchaRequired(true);
         setError(isEnglish ? 'Complete verification before extracting these screenshots again.' : '相同截图重复识别，请先完成验证。');
@@ -141,7 +144,9 @@ export function HomePage() {
       const report = await api.reports.detect(data);
       navigate(`/report/${report.report_id}`);
     } catch (err: unknown) {
-      if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
+      if (err instanceof ApiRequestError && err.code === 'RATE_LIMITED') {
+        setRateLimitNotice({ message: err.message, retryAfter: err.retryAfter });
+      } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
         setCaptchaAction('analysis');
         setCaptchaRequired(true);
         setError('请求较频繁，请完成验证后再次检测。');
@@ -170,6 +175,10 @@ export function HomePage() {
     }
     setError(isEnglish ? 'Verification complete. Click Analyze job again.' : '验证已完成，请再次点击“开始检测”。');
   }, [captchaAction, handleExtractScreenshots, isEnglish]);
+
+  const retryMinutes = rateLimitNotice?.retryAfter
+    ? Math.max(1, Math.ceil((new Date(rateLimitNotice.retryAfter).getTime() - Date.now()) / 60_000))
+    : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-warning-50">
@@ -346,6 +355,32 @@ export function HomePage() {
                   onError={code => setError(`验证加载失败${code ? `（${code}）` : ''}，请刷新页面后重试。`)}
                   resetSignal={captchaResetSignal}
                 />
+              </div>
+            </div>
+          )}
+
+          {rateLimitNotice && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/45 p-4" role="dialog" aria-modal="true" aria-labelledby="rate-limit-dialog-title">
+              <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 id="rate-limit-dialog-title" className="text-base font-semibold text-gray-900">
+                      {isEnglish ? 'Please wait before retrying' : '请稍后再试'}
+                    </h2>
+                    <p className="mt-2 text-sm text-gray-600">{rateLimitNotice.message}</p>
+                    {retryMinutes && (
+                      <p className="mt-2 text-sm font-medium text-primary-700">
+                        {isEnglish ? `Try again in about ${retryMinutes} minutes.` : `预计 ${retryMinutes} 分钟后可再次提交。`}
+                      </p>
+                    )}
+                  </div>
+                  <button type="button" onClick={() => setRateLimitNotice(null)} aria-label={isEnglish ? 'Close' : '关闭提示'} className="rounded-md p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+                <button type="button" onClick={() => setRateLimitNotice(null)} className="mt-5 w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary-700">
+                  {isEnglish ? 'Got it' : '知道了'}
+                </button>
               </div>
             </div>
           )}
