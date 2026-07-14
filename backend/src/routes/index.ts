@@ -31,8 +31,9 @@ import { startDataRetentionScheduler } from '../services/dataRetention';
 import { extractJobFromScreenshots } from '../services/screenshotExtraction';
 
 const llmProvider = createLlmProviderWithFallback();
+const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const REPORT_CACHE_TTL_MS = 7 * DAY_MS;
+const REPORT_CACHE_TTL_MS = 10 * MINUTE_MS;
 const REPORT_TTL_MS = 30 * DAY_MS;
 const FEEDBACK_TTL_MS = 90 * DAY_MS;
 const REPORT_CACHE_MAX = 500;
