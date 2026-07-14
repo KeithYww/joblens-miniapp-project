@@ -71,8 +71,8 @@ export async function createServer(): Promise<FastifyInstance> {
 
   await app.register(cors, {
     origin: isProduction ? configuredCorsOrigins : [...defaultCorsOrigins, ...configuredCorsOrigins],
-    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'x-visitor-id'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-visitor-id'],
     exposedHeaders: [
       'x-joblens-analysis-source',
       'x-joblens-ai-provider',
@@ -103,7 +103,7 @@ export async function createServer(): Promise<FastifyInstance> {
 
   app.addHook('onResponse', async (request, reply) => {
     const path = request.url.split('?')[0];
-    if (!path.startsWith('/api/') || path === '/api/health' || path.startsWith('/api/internal/') || path === '/api/client-errors') return;
+    if (!path.startsWith('/api/') || path === '/api/health' || path.startsWith('/api/internal/') || path.startsWith('/api/admin/') || path === '/api/client-errors') return;
     await recordApiResponse(reply.statusCode);
   });
 

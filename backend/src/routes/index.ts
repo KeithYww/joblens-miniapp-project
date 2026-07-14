@@ -48,6 +48,7 @@ import {
 } from '../services/screenshotCache';
 import { LlmConfigurationError } from '../services/llm/common';
 import { getOperationalMetrics, recordFrontendError } from '../services/operationalMetrics';
+import { registerAdminRoutes } from './admin';
 
 const llmProvider = createLlmProviderWithFallback();
 const ruleProvider = new RuleBasedProvider();
@@ -565,6 +566,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       ));
     }
   });
+
+  await registerAdminRoutes(app);
 
   app.get('/api/internal/metrics', async (request, reply) => {
     if (!hasValidBearerToken(request, 'MONITORING_TOKEN')) {

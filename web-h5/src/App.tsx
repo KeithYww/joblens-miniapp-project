@@ -4,6 +4,7 @@ import { ReportPage } from '@/pages/ReportPage';
 import { FeedbackPage } from '@/pages/FeedbackPage';
 import { PrivacyPage } from '@/pages/PrivacyPage';
 import { DisclaimerPage } from '@/pages/DisclaimerPage';
+import { AdminPage } from '@/pages/AdminPage';
 
 const router = createBrowserRouter([
   {
@@ -25,6 +26,10 @@ const router = createBrowserRouter([
   {
     path: '/disclaimer',
     element: <DisclaimerPage />,
+  },
+  {
+    path: '/admin',
+    element: <AdminPage />,
   },
 ]);
 

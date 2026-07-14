@@ -67,6 +67,7 @@ services:
       DATA_CLEANUP_INTERVAL_MS: ${DATA_CLEANUP_INTERVAL_MS:-3600000}
       MONITORING_TOKEN: ${MONITORING_TOKEN}
       BACKUP_TOKEN: ${BACKUP_TOKEN}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
     depends_on:
       postgres:
         condition: service_healthy
