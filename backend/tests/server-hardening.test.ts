@@ -36,6 +36,50 @@ test('health reports required dependency degradation and emits security headers'
   }
 });
 
+test('operational metrics require a bearer token and client errors are accepted safely', async () => {
+  const previous = {
+    REQUIRE_DATABASE: process.env.REQUIRE_DATABASE,
+    REQUIRE_REDIS: process.env.REQUIRE_REDIS,
+    MONITORING_TOKEN: process.env.MONITORING_TOKEN,
+  };
+  process.env.REQUIRE_DATABASE = 'false';
+  process.env.REQUIRE_REDIS = 'false';
+  process.env.MONITORING_TOKEN = 'test-monitoring-token-with-sufficient-entropy';
+  const { createServer } = await import('../src/index');
+  const app = await createServer();
+  try {
+    const missingToken = await app.inject({ method: 'GET', url: '/api/internal/metrics' });
+    assert.equal(missingToken.statusCode, 401);
+    assert.equal(missingToken.json().error, 'UNAUTHORIZED');
+
+    const wrongToken = await app.inject({
+      method: 'GET',
+      url: '/api/internal/metrics',
+      headers: { authorization: 'Bearer wrong-token' },
+    });
+    assert.equal(wrongToken.statusCode, 401);
+
+    const acceptedError = await app.inject({
+      method: 'POST',
+      url: '/api/client-errors',
+      headers: { 'x-visitor-id': 'visitor_cccccccccccccccccccccccccccccccc' },
+      payload: {
+        kind: 'error',
+        message: 'Example rendering failure',
+        source: '/assets/index.js',
+        path: '/report/example',
+        line: 12,
+        column: 8,
+      },
+    });
+    assert.equal(acceptedError.statusCode, 202);
+    assert.equal(acceptedError.json().status, 'accepted');
+  } finally {
+    await app.close();
+    for (const [name, value] of Object.entries(previous)) restoreEnv(name, value);
+  }
+});
+
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;

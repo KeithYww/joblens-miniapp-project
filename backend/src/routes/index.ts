@@ -12,6 +12,7 @@ import type {
 import {
   containsHighSensitiveData,
   CaptchaRequestSchema,
+  ClientErrorReportSchema,
   DetectRequestSchema,
   HrAnalysisRequestSchema,
   InterviewFeedbackRequestSchema,
@@ -40,10 +41,13 @@ import {
 } from '../services/aiCostControl';
 import {
   calculateOcrCacheKey,
+  deleteCachedScreenshotExtraction,
   getCachedScreenshotExtraction,
+  isScreenshotExtractionSafeToCache,
   setCachedScreenshotExtraction,
 } from '../services/screenshotCache';
 import { LlmConfigurationError } from '../services/llm/common';
+import { getOperationalMetrics, recordFrontendError } from '../services/operationalMetrics';
 
 const llmProvider = createLlmProviderWithFallback();
 const ruleProvider = new RuleBasedProvider();
@@ -89,6 +93,17 @@ function buildErrorResponse(
   if (captchaProvider) response.captcha_provider = captchaProvider;
   if (retryAfter) response.retry_after = retryAfter;
   return response;
+}
+
+function hasValidMonitoringToken(request: FastifyRequest): boolean {
+  const expected = process.env.MONITORING_TOKEN?.trim();
+  const authorization = request.headers.authorization;
+  if (!expected || !authorization?.startsWith('Bearer ')) return false;
+  const received = authorization.slice('Bearer '.length).trim();
+  const expectedBuffer = Buffer.from(expected);
+  const receivedBuffer = Buffer.from(received);
+  return expectedBuffer.length === receivedBuffer.length
+    && crypto.timingSafeEqual(expectedBuffer, receivedBuffer);
 }
 
 function logInternalFailure(request: FastifyRequest, operation: string, error: unknown): void {
@@ -547,6 +562,48 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  app.get('/api/internal/metrics', async (request, reply) => {
+    if (!hasValidMonitoringToken(request)) {
+      return reply.status(401).send(buildErrorResponse('UNAUTHORIZED', '未授权访问。'));
+    }
+    const rawWindow = (request.query as { window_minutes?: string }).window_minutes;
+    const parsedWindow = rawWindow && /^\d+$/.test(rawWindow) ? Number(rawWindow) : undefined;
+    const metrics = await getOperationalMetrics(parsedWindow);
+    return reply.status(metrics.available ? 200 : 503).send(metrics);
+  });
+
+  app.post('/api/client-errors', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const parsed = ClientErrorReportSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '错误报告格式无效。'));
+    const inputHash = calculateWriteHash(visitorId, '/api/client-errors', {
+      kind: parsed.data.kind,
+      source: parsed.data.source,
+      path: parsed.data.path,
+    });
+    const requestId = generateId('req');
+    if (!await enforceWriteProtection({
+      request,
+      reply,
+      requestId,
+      visitorId,
+      apiPath: '/api/client-errors',
+      inputHash,
+    })) return;
+    await recordFrontendError();
+    request.log.warn({
+      event: 'client_error',
+      kind: parsed.data.kind,
+      path: parsed.data.path,
+      source: parsed.data.source,
+      message: containsHighSensitiveData([parsed.data.message]) ? '[redacted]' : parsed.data.message,
+      line: parsed.data.line,
+      column: parsed.data.column,
+    }, 'frontend error reported');
+    return reply.status(202).send({ status: 'accepted' });
+  });
+
   app.get('/api/ai-quota', async (request, reply) => {
     const visitorId = requireVisitorId(request, reply);
     if (!visitorId) return;
@@ -684,6 +741,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const cacheKey = calculateOcrCacheKey(parsed.data.images, parsed.data.language);
     const cached = await getCachedScreenshotExtraction(cacheKey);
     if (cached) {
+      if (!isScreenshotExtractionSafeToCache(cached.result)) {
+        await deleteCachedScreenshotExtraction(cacheKey);
+        return reply.status(400).send(buildErrorResponse(
+          'SENSITIVE_DATA_DETECTED',
+          '截图识别结果包含身份证号、银行卡号或完整手机号，请打码后重新上传。'
+        ));
+      }
       const quota = await getAiQuotaSnapshot(visitorId);
       reply.headers({
         'x-joblens-analysis-source': 'cache',
@@ -723,6 +787,26 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const extraction = await extractJobFromScreenshots(parsed.data.images, parsed.data.language);
+      if (!isScreenshotExtractionSafeToCache(extraction.result)) {
+        await logApiRequest({
+          requestId,
+          apiPath,
+          method: 'POST',
+          visitorId,
+          ip: request.ip,
+          httpStatus: 400,
+          errorCode: 'SENSITIVE_DATA_DETECTED',
+          errorMessage: 'OCR 结果包含高敏个人标识',
+          aiCalled: true,
+          provider: extraction.provider,
+          model: extraction.model,
+          latencyMs: extraction.latencyMs,
+        });
+        return reply.status(400).send(buildErrorResponse(
+          'SENSITIVE_DATA_DETECTED',
+          '截图识别结果包含身份证号、银行卡号或完整手机号，请打码后重新上传。'
+        ));
+      }
       await setCachedScreenshotExtraction(cacheKey, {
         result: extraction.result,
         model: extraction.model,

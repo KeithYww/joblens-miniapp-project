@@ -44,6 +44,14 @@ export interface AiQuotaSnapshot {
   resetAt: string;
 }
 
+export interface GlobalAiBudgetUsage {
+  available: boolean;
+  used: number;
+  limit: number;
+  usage_ratio: number;
+  reset_at: string;
+}
+
 const NAMESPACE = 'ai-cost:v1';
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1_000;
 
@@ -168,6 +176,31 @@ function quotaKeys(visitorId: string, ip: string, operation: AiOperation, day: s
     `${NAMESPACE}:ip:${hashKeyPart(ip)}:${operation}:${day}`,
     `${NAMESPACE}:global:credits:${day}`,
   ];
+}
+
+export async function getGlobalAiBudgetUsage(nowMs = Date.now()): Promise<GlobalAiBudgetUsage> {
+  const window = getShanghaiQuotaWindow(nowMs);
+  let limit = 0;
+  try {
+    limit = getAiCostConfig().dailyCreditLimit;
+  } catch {
+    return { available: false, used: 0, limit: 0, usage_ratio: 0, reset_at: window.resetAt };
+  }
+  if (!isRedisAvailable()) {
+    return { available: false, used: 0, limit, usage_ratio: 0, reset_at: window.resetAt };
+  }
+  try {
+    const used = Math.max(0, Number.parseInt(await redis.get(`${NAMESPACE}:global:credits:${window.day}`) || '0', 10) || 0);
+    return {
+      available: true,
+      used,
+      limit,
+      usage_ratio: Number((used / limit).toFixed(4)),
+      reset_at: window.resetAt,
+    };
+  } catch {
+    return { available: false, used: 0, limit, usage_ratio: 0, reset_at: window.resetAt };
+  }
 }
 
 function parseEvalArray(value: unknown): [number, number] {

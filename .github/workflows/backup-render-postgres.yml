@@ -1,0 +1,76 @@
+name: Backup Render Postgres
+
+on:
+  schedule:
+    - cron: '30 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup-render-postgres
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+      RENDER_API: https://api.render.com/v1
+      DATABASE_NAME: joblens-preview-db
+    steps:
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Create encrypted logical backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY"
+          test -n "$BACKUP_ENCRYPTION_PASSPHRASE"
+
+          request() {
+            curl --connect-timeout 10 --max-time 30 --fail --silent --show-error --retry 3 --retry-all-errors \
+              -H 'Accept: application/json' \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+
+          owner_id="$(request "$RENDER_API/owners?limit=1" | jq -r '.[0].owner.id // .[0].id // empty')"
+          test -n "$owner_id"
+          database_id="$(request "$RENDER_API/postgres?name=$DATABASE_NAME&ownerId=$owner_id&limit=1" | jq -r '.[0].postgres.id // .[0].id // empty')"
+          test -n "$database_id"
+          database_url="$(request "$RENDER_API/postgres/$database_id/connection-info" | jq -r '.externalConnectionString // empty')"
+          test -n "$database_url"
+          echo "::add-mask::$database_url"
+          export DATABASE_URL="$database_url"
+
+          timestamp="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+          mkdir -p backups
+          dump="backups/joblens-$timestamp.dump"
+          encrypted="$dump.enc"
+          pg_dump --format=custom --compress=9 --no-owner --no-privileges --file="$dump"
+          test -s "$dump"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -in "$dump" -out "$encrypted" -pass env:BACKUP_ENCRYPTION_PASSPHRASE
+          rm -f "$dump"
+          sha256sum "$encrypted" > "$encrypted.sha256"
+          verify_dump="$(mktemp)"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in "$encrypted" -out "$verify_dump" -pass env:BACKUP_ENCRYPTION_PASSPHRASE
+          pg_restore --list "$verify_dump" >/dev/null
+          rm -f "$verify_dump"
+
+      - name: Upload encrypted backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-backup-${{ github.run_id }}
+          path: |
+            backups/*.dump.enc
+            backups/*.dump.enc.sha256
+          if-no-files-found: error
+          retention-days: 14

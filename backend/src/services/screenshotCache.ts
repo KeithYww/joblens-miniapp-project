@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { isRedisAvailable, redis } from '../db/redis';
 import type { ScreenshotExtractResult } from '../types';
+import { containsHighSensitiveData } from '../schemas';
 import { getVisionModelName, OCR_PROMPT_VERSION } from './screenshotExtraction';
 
 const NAMESPACE = 'ocr-cache:v1';
@@ -23,6 +24,16 @@ export interface CachedScreenshotExtraction {
   model: string;
   provider: string;
   createdAt: string;
+}
+
+export function isScreenshotExtractionSafeToCache(result: ScreenshotExtractResult): boolean {
+  return !containsHighSensitiveData([
+    result.jd_text,
+    result.company_name,
+    result.job_title,
+    result.source_platform,
+    result.hr_chat_text,
+  ]);
 }
 
 function boundedCacheTtl(): number {
@@ -63,11 +74,21 @@ export async function getCachedScreenshotExtraction(key: string): Promise<Cached
 
 export async function setCachedScreenshotExtraction(key: string, value: CachedScreenshotExtraction): Promise<void> {
   if (!isRedisAvailable()) return;
+  if (!isScreenshotExtractionSafeToCache(value.result)) return;
   const parsed = cachedExtractionSchema.safeParse(value);
   if (!parsed.success) return;
   try {
     await redis.set(key, JSON.stringify(parsed.data), 'EX', boundedCacheTtl());
   } catch {
     // A cache write failure must not fail an otherwise successful OCR request.
+  }
+}
+
+export async function deleteCachedScreenshotExtraction(key: string): Promise<void> {
+  if (!isRedisAvailable()) return;
+  try {
+    await redis.del(key);
+  } catch {
+    // A stale entry will expire naturally if deletion fails.
   }
 }

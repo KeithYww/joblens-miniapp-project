@@ -1,0 +1,65 @@
+name: Monitor Production
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitor-production
+  cancel-in-progress: true
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    env:
+      API_URL: https://joblens-preview-api.onrender.com
+      MONITORING_TOKEN: ${{ secrets.MONITORING_TOKEN }}
+    steps:
+      - name: Check health and operational thresholds
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$MONITORING_TOKEN"
+
+          health_file="$(mktemp)"
+          health_code="$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 --output "$health_file" --write-out '%{http_code}' \
+            "$API_URL/api/health")"
+          cat "$health_file" | jq '{status, dependencies}'
+          test "$health_code" = '200'
+          test "$(jq -r '.status' "$health_file")" = 'ok'
+
+          metrics_file="$(mktemp)"
+          metrics_code="$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 --output "$metrics_file" --write-out '%{http_code}' \
+            -H "Authorization: Bearer $MONITORING_TOKEN" \
+            "$API_URL/api/internal/metrics?window_minutes=30")"
+          test "$metrics_code" = '200'
+          jq '{window_minutes, requests, frontend_errors, ai_budget}' "$metrics_file"
+
+          total="$(jq -r '.requests.total' "$metrics_file")"
+          success_rate="$(jq -r '.requests.success_rate // 1' "$metrics_file")"
+          server_errors="$(jq -r '.requests.server_errors' "$metrics_file")"
+          frontend_errors="$(jq -r '.frontend_errors' "$metrics_file")"
+          budget_ratio="$(jq -r '.ai_budget.usage_ratio' "$metrics_file")"
+
+          if [ "$total" -ge 10 ] && awk "BEGIN {exit !($success_rate < 0.95)}"; then
+            echo "API success rate below 95%: $success_rate" >&2
+            exit 1
+          fi
+          if [ "$server_errors" -ge 3 ]; then
+            echo "API produced $server_errors server errors in 30 minutes" >&2
+            exit 1
+          fi
+          if [ "$frontend_errors" -ge 5 ]; then
+            echo "Frontend reported $frontend_errors errors in 30 minutes" >&2
+            exit 1
+          fi
+          if awk "BEGIN {exit !($budget_ratio >= 0.80)}"; then
+            echo "AI daily budget reached ${budget_ratio}; investigate usage before the hard limit" >&2
+            exit 1
+          fi

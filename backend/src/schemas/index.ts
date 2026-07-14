@@ -154,3 +154,12 @@ export const ReportFeedbackRequestSchema = z.object({
 export const CaptchaRequestSchema = z.object({
   captcha_token: z.string().max(2048).optional(),
 });
+
+export const ClientErrorReportSchema = z.object({
+  kind: z.enum(['error', 'unhandled_rejection']),
+  message: z.string().max(300),
+  source: z.string().max(200).optional(),
+  path: z.string().max(200),
+  line: z.number().int().min(0).max(10_000_000).optional(),
+  column: z.number().int().min(0).max(10_000_000).optional(),
+});

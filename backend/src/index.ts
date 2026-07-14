@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { registerRoutes } from './routes';
 import { initRedis, isRedisAvailable, redis } from './db/redis';
 import { checkDbConnection, getDbHealth, isDbAvailable, prisma } from './db/prisma';
+import { recordApiResponse } from './services/operationalMetrics';
 
 const isProduction = process.env.NODE_ENV === 'production';
 const defaultCorsOrigins = ['http://localhost:5173', 'http://localhost:3000'];
@@ -98,6 +99,12 @@ export async function createServer(): Promise<FastifyInstance> {
     if (isProduction) {
       reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
     }
+  });
+
+  app.addHook('onResponse', async (request, reply) => {
+    const path = request.url.split('?')[0];
+    if (!path.startsWith('/api/') || path === '/api/health' || path === '/api/internal/metrics' || path === '/api/client-errors') return;
+    await recordApiResponse(reply.statusCode);
   });
 
   await registerRoutes(app);

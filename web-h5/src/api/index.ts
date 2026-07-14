@@ -9,6 +9,7 @@ import type {
   ScreenshotExtractResult,
   AiQuotaSnapshot,
   ApiError,
+  ClientErrorReport,
 } from '@/types';
 
 const configuredApiUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:3000';
@@ -90,6 +91,14 @@ async function fetchApi<T>(
 }
 
 export const api = {
+  monitoring: {
+    reportClientError: async (data: ClientErrorReport): Promise<void> => {
+      await fetchApi('/api/client-errors', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }, 5_000);
+    },
+  },
   quota: {
     get: async (): Promise<AiQuotaSnapshot> => fetchApi('/api/ai-quota'),
   },

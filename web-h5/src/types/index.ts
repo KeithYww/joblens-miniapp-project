@@ -112,3 +112,12 @@ export interface ApiError {
   captcha_provider?: string;
   retry_after?: string;
 }
+
+export interface ClientErrorReport {
+  kind: 'error' | 'unhandled_rejection';
+  message: string;
+  source?: string;
+  path: string;
+  line?: number;
+  column?: number;
+}
