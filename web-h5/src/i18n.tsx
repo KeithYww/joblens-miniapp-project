@@ -67,17 +67,17 @@ export function useI18n() {
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();
   return (
-    <label className="sr-only">
-      {t('language')}
+    <div className="flex items-center">
+      <span className="sr-only">{t('language')}</span>
       <select
         aria-label={t('language')}
         value={locale}
         onChange={event => setLocale(event.target.value as Locale)}
-        className="not-sr-only rounded-md border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700"
+        className="rounded-md border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700"
       >
         <option value="zh-CN">{t('chinese')}</option>
         <option value="en-US">{t('english')}</option>
       </select>
-    </label>
+    </div>
   );
 }
