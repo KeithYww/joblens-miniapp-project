@@ -52,7 +52,18 @@ jobs:
           mkdir -p backups
           dump="backups/joblens-$timestamp.dump"
           encrypted="$dump.enc"
-          pg_dump "$database_url" --format=custom --compress=9 --no-owner --no-privileges --file="$dump"
+          export PGCONNECT_TIMEOUT=20
+          for attempt in 1 2 3 4 5; do
+            if pg_dump "$database_url" --format=custom --compress=9 --no-owner --no-privileges --file="$dump"; then
+              break
+            fi
+            rm -f "$dump"
+            if [ "$attempt" -eq 5 ]; then
+              echo 'PostgreSQL backup failed after 5 attempts' >&2
+              exit 1
+            fi
+            sleep $((attempt * 15))
+          done
           test -s "$dump"
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
             -in "$dump" -out "$encrypted" -pass env:BACKUP_ENCRYPTION_PASSPHRASE
