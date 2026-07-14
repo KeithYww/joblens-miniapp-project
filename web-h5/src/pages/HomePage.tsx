@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, ShieldCheck, FileText, MessageSquare, ImageUp, X, CheckCircle } from 'lucide-react';
 import { TextInputPanel } from '@/components';
@@ -24,6 +24,19 @@ export function HomePage() {
   const [screenshots, setScreenshots] = useState<Array<{ name: string; dataUrl: string }>>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractStatus, setExtractStatus] = useState('');
+  const [extractProgress, setExtractProgress] = useState(0);
+
+  useEffect(() => {
+    if (!isExtracting) return;
+    const timer = window.setInterval(() => {
+      setExtractProgress(current => {
+        if (current < 45) return Math.min(45, current + 7);
+        if (current < 75) return Math.min(75, current + 3);
+        return Math.min(90, current + 1);
+      });
+    }, 700);
+    return () => window.clearInterval(timer);
+  }, [isExtracting]);
 
   const handleScreenshotSelection = useCallback(async (files: FileList | null) => {
     if (!files) return;
@@ -50,10 +63,13 @@ export function HomePage() {
   const handleExtractScreenshots = useCallback(async () => {
     if (screenshots.length === 0) return;
     setIsExtracting(true);
+    setExtractProgress(12);
     setError('');
     setExtractStatus('');
     try {
       const result = await api.ocr.extractJob({ images: screenshots.map(item => item.dataUrl), language: locale });
+      setExtractProgress(100);
+      await new Promise(resolve => window.setTimeout(resolve, 250));
       setJdText(result.jd_text);
       if (!companyName && result.company_name) setCompanyName(result.company_name);
       if (!jobTitle && result.job_title) setJobTitle(result.job_title);
@@ -61,11 +77,20 @@ export function HomePage() {
       if (!hrChatText && result.hr_chat_text) setHrChatText(result.hr_chat_text);
       setExtractStatus(isEnglish ? 'Text extracted. Review and edit the fields below before analyzing.' : '已提取岗位信息，请在下方确认和编辑后再开始检测。');
     } catch (err) {
+      setExtractProgress(0);
       setError(err instanceof Error ? err.message : (isEnglish ? 'Screenshot extraction failed. Please try again later.' : '截图识别失败，请稍后重试。'));
     } finally {
       setIsExtracting(false);
     }
   }, [screenshots, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish]);
+
+  const extractProgressLabel = extractProgress < 45
+    ? (isEnglish ? 'Preparing screenshots...' : '正在准备截图...')
+    : extractProgress < 75
+      ? (isEnglish ? 'Reading job information...' : '正在识别岗位信息...')
+      : extractProgress < 100
+        ? (isEnglish ? 'Organizing extracted content...' : '正在整理识别结果...')
+        : (isEnglish ? 'Extraction complete' : '识别完成');
 
   const handleSubmit = useCallback(async () => {
     if (!jdText.trim()) {
@@ -162,6 +187,16 @@ export function HomePage() {
                   </button>}
                 </div>
                 {screenshots.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{screenshots.map((item, index) => <div key={`${item.name}-${index}`} className="flex max-w-full items-center gap-1 rounded-md bg-white px-2 py-1 text-xs text-gray-700 border border-gray-200"><span className="max-w-40 truncate">{item.name}</span><button type="button" aria-label={isEnglish ? `Remove ${item.name}` : `移除 ${item.name}`} onClick={() => setScreenshots(current => current.filter((_, itemIndex) => itemIndex !== index))} className="text-gray-500 hover:text-danger-600"><X className="w-3.5 h-3.5" /></button></div>)}</div>}
+                {isExtracting && <div className="mt-4" aria-live="polite">
+                  <div className="mb-1.5 flex items-center justify-between text-xs text-primary-700">
+                    <span>{extractProgressLabel}</span>
+                    <span>{extractProgress}%</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-primary-100" role="progressbar" aria-label={extractProgressLabel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={extractProgress}>
+                    <div className="h-full rounded-full bg-primary-600 transition-all duration-500 ease-out" style={{ width: `${extractProgress}%` }} />
+                  </div>
+                  <p className="mt-2 text-xs text-gray-500">{isEnglish ? 'This can take up to a minute for multiple screenshots.' : '多张截图通常需要几十秒，请保持当前页面打开。'}</p>
+                </div>}
                 {extractStatus && <p className="mt-3 flex items-center gap-1.5 text-sm text-success-700"><CheckCircle className="w-4 h-4" />{extractStatus}</p>}
               </div>
             </div>
