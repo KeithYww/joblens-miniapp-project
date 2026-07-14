@@ -129,6 +129,11 @@ jobs:
                 --arg corsOrigin "$VERCEL_ORIGIN" \
                 '{envVars:[{key:"NODE_ENV",value:"production"},{key:"DATABASE_URL",value:$databaseUrl},{key:"REDIS_URL",value:$redisUrl},{key:"REQUIRE_DATABASE",value:"true"},{key:"REQUIRE_REDIS",value:"true"},{key:"TRUST_PROXY",value:"1"},{key:"BODY_LIMIT_BYTES",value:"10485760"},{key:"CORS_ORIGIN",value:$corsOrigin},{key:"AI_PROVIDER",value:"siliconflow"},{key:"SILICONFLOW_API_KEY",value:$siliconflowApiKey},{key:"SILICONFLOW_MODEL",value:"Qwen/Qwen2.5-72B-Instruct"},{key:"SILICONFLOW_VISION_MODEL",value:"Qwen/Qwen3-VL-8B-Instruct"},{key:"TURNSTILE_SECRET_KEY",value:$turnstileSecretKey}],serviceDetails:{envSpecificDetails:{buildCommand:"npm ci --include=dev && npx prisma generate && npm run build",startCommand:"npm run prisma:deploy && npm start"}}}')" \
               "$RENDER_API/services/$service_id" >/dev/null
+            # Render treats service environment variables as a separate nested resource.
+            # Keep this explicit update so newly introduced secrets reach existing services.
+            request -X PUT -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg value "$TURNSTILE_SECRET_KEY" '{value:$value}')" \
+              "$RENDER_API/services/$service_id/env-vars/TURNSTILE_SECRET_KEY" >/dev/null
             request -X POST -H 'Content-Type: application/json' --data '{"clearCache":"clear"}' "$RENDER_API/services/$service_id/deploys" >/dev/null
           fi
 
