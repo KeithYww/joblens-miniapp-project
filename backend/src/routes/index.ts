@@ -149,6 +149,7 @@ function localizeReportForResponse(report: RiskReport, language?: 'zh-CN' | 'en-
     ...report,
     risk_level: riskLevels[report.risk_level],
     confidence: confidences[report.confidence],
+    disclaimer: 'This result is for job-search decision support only and does not constitute legal advice.',
   };
 }
 
