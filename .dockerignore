@@ -1,0 +1,12 @@
+.git
+.github
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!backend/.env.example
+!web-h5/.env.example
+!deploy/.env.production.example
+*.log
+

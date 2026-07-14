@@ -4,6 +4,8 @@ dist/
 build/
 .env
 .env.local
+deploy/.env.production
+backups/
 .vscode/
 .idea/
 *.log
