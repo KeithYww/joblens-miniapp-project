@@ -52,6 +52,20 @@ export interface DetectRequest {
   language?: 'zh-CN' | 'en-US';
 }
 
+export interface ScreenshotExtractRequest {
+  images: string[];
+  language?: 'zh-CN' | 'en-US';
+  captcha_token?: string;
+}
+
+export interface ScreenshotExtractResult {
+  jd_text: string;
+  company_name?: string;
+  job_title?: string;
+  source_platform?: string;
+  hr_chat_text?: string;
+}
+
 export interface HrAnalysisRequest {
   report_id?: string;
   user_question: string;

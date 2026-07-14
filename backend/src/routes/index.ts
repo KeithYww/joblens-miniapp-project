@@ -15,6 +15,7 @@ import {
   HrAnalysisRequestSchema,
   InterviewFeedbackRequestSchema,
   ReportFeedbackRequestSchema,
+  ScreenshotExtractRequestSchema,
   VisitorIdSchema,
 } from '../schemas';
 import { isDbAvailable, prisma, runDbOperation } from '../db/prisma';
@@ -27,6 +28,7 @@ import {
   verifyCaptcha,
 } from '../services/rateLimit';
 import { startDataRetentionScheduler } from '../services/dataRetention';
+import { extractJobFromScreenshots } from '../services/screenshotExtraction';
 
 const llmProvider = createLlmProviderWithFallback();
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -539,6 +541,29 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 500, errorCode: 'INTERNAL_ERROR', errorMessage: '报告生成失败' });
       logInternalFailure(request, 'report_generation', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));
+    }
+  });
+
+  app.post('/api/ocr/extract-job', async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const requestId = generateId('req');
+    const apiPath = '/api/ocr/extract-job';
+    const parsed = ScreenshotExtractRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 400, errorCode: 'VALIDATION_ERROR', errorMessage: '截图参数格式错误' });
+      return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '截图参数格式错误', parsed.error.errors.map(error => ({ field: error.path.join('.'), issue: error.message }))));
+    }
+    const inputHash = calculateWriteHash(visitorId, apiPath, { image_hashes: parsed.data.images.map(image => crypto.createHash('sha256').update(image).digest('hex')) });
+    if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
+    try {
+      const extraction = await extractJobFromScreenshots(parsed.data.images, parsed.data.language);
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: true, provider: extraction.provider, model: extraction.model, latencyMs: extraction.latencyMs });
+      return reply.send(extraction.result);
+    } catch (error) {
+      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 502, errorCode: 'OCR_UNAVAILABLE', errorMessage: '截图识别服务暂时不可用' });
+      logInternalFailure(request, 'screenshot_extraction', error);
+      return reply.status(502).send(buildErrorResponse('OCR_UNAVAILABLE', '截图识别服务暂时不可用，请稍后重试或手动填写。'));
     }
   });
 

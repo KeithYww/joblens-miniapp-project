@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, ShieldCheck, FileText, MessageSquare } from 'lucide-react';
+import { ArrowRight, ShieldCheck, FileText, MessageSquare, ImageUp, X, CheckCircle } from 'lucide-react';
 import { TextInputPanel } from '@/components';
 import { TurnstileChallenge } from '@/components/TurnstileChallenge';
 import { api, ApiRequestError } from '@/api';
@@ -21,6 +21,51 @@ export function HomePage() {
   const [captchaRequired, setCaptchaRequired] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
   const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
+  const [screenshots, setScreenshots] = useState<Array<{ name: string; dataUrl: string }>>([]);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractStatus, setExtractStatus] = useState('');
+
+  const handleScreenshotSelection = useCallback(async (files: FileList | null) => {
+    if (!files) return;
+    const selected = Array.from(files);
+    if (selected.length + screenshots.length > 3) {
+      setError(isEnglish ? 'You can upload up to 3 screenshots.' : '最多上传 3 张截图。');
+      return;
+    }
+    if (selected.some(file => !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 2 * 1024 * 1024)) {
+      setError(isEnglish ? 'Use PNG, JPEG, or WebP screenshots smaller than 2MB each.' : '请上传单张不超过 2MB 的 PNG、JPEG 或 WebP 截图。');
+      return;
+    }
+    const encoded = await Promise.all(selected.map(file => new Promise<{ name: string; dataUrl: string }>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ name: file.name, dataUrl: String(reader.result) });
+      reader.onerror = () => reject(new Error('read failed'));
+      reader.readAsDataURL(file);
+    })));
+    setScreenshots(current => [...current, ...encoded]);
+    setExtractStatus('');
+    setError('');
+  }, [screenshots.length, isEnglish]);
+
+  const handleExtractScreenshots = useCallback(async () => {
+    if (screenshots.length === 0) return;
+    setIsExtracting(true);
+    setError('');
+    setExtractStatus('');
+    try {
+      const result = await api.ocr.extractJob({ images: screenshots.map(item => item.dataUrl), language: locale });
+      setJdText(result.jd_text);
+      if (!companyName && result.company_name) setCompanyName(result.company_name);
+      if (!jobTitle && result.job_title) setJobTitle(result.job_title);
+      if (!sourcePlatform && result.source_platform) setSourcePlatform(result.source_platform);
+      if (!hrChatText && result.hr_chat_text) setHrChatText(result.hr_chat_text);
+      setExtractStatus(isEnglish ? 'Text extracted. Review and edit the fields below before analyzing.' : '已提取岗位信息，请在下方确认和编辑后再开始检测。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : (isEnglish ? 'Screenshot extraction failed. Please try again later.' : '截图识别失败，请稍后重试。'));
+    } finally {
+      setIsExtracting(false);
+    }
+  }, [screenshots, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish]);
 
   const handleSubmit = useCallback(async () => {
     if (!jdText.trim()) {
@@ -64,7 +109,7 @@ export function HomePage() {
     } finally {
       setIsLoading(false);
     }
-  }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, captchaToken, navigate]);
+  }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, captchaToken, locale, navigate]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-warning-50">
@@ -99,6 +144,29 @@ export function HomePage() {
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-6">
+          <section className="border border-primary-100 bg-primary-50/40 rounded-xl p-4">
+            <div className="flex items-start gap-3">
+              <ImageUp className="w-5 h-5 text-primary-600 mt-0.5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm font-semibold text-gray-800">{isEnglish ? 'Import job screenshots' : '上传岗位截图识别'}</h2>
+                <p className="mt-1 text-xs text-gray-600">{isEnglish ? 'Upload up to 3 job-detail or recruiter-chat screenshots. Review the extracted text before analysis.' : '可上传岗位详情或 HR 聊天截图，最多 3 张。识别后请确认并编辑内容。'}</p>
+                <p className="mt-1 text-xs text-gray-500">{isEnglish ? 'Do not upload IDs, bank cards, or full phone numbers.' : '请勿上传身份证、银行卡、完整手机号等敏感信息。'}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-primary-200 bg-white px-3 py-2 text-sm font-medium text-primary-700 hover:bg-primary-50">
+                    <ImageUp className="w-4 h-4" />
+                    {isEnglish ? 'Choose screenshots' : '选择截图'}
+                    <input className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={event => void handleScreenshotSelection(event.target.files)} />
+                  </label>
+                  {screenshots.length > 0 && <button type="button" onClick={() => void handleExtractScreenshots()} disabled={isExtracting} className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+                    {isExtracting ? (isEnglish ? 'Extracting...' : '识别中...') : (isEnglish ? 'Extract text' : '识别截图')}
+                  </button>}
+                </div>
+                {screenshots.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{screenshots.map((item, index) => <div key={`${item.name}-${index}`} className="flex max-w-full items-center gap-1 rounded-md bg-white px-2 py-1 text-xs text-gray-700 border border-gray-200"><span className="max-w-40 truncate">{item.name}</span><button type="button" aria-label={isEnglish ? `Remove ${item.name}` : `移除 ${item.name}`} onClick={() => setScreenshots(current => current.filter((_, itemIndex) => itemIndex !== index))} className="text-gray-500 hover:text-danger-600"><X className="w-3.5 h-3.5" /></button></div>)}</div>}
+                {extractStatus && <p className="mt-3 flex items-center gap-1.5 text-sm text-success-700"><CheckCircle className="w-4 h-4" />{extractStatus}</p>}
+              </div>
+            </div>
+          </section>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-sm font-medium text-gray-700 mb-2 block">

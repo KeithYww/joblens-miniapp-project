@@ -109,6 +109,16 @@ export const DetectRequestSchema = z.object({
   language: z.enum(['zh-CN', 'en-US']).optional(),
 });
 
+const ImageDataUrlSchema = z.string()
+  .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/, '仅支持 PNG、JPEG 或 WebP 图片')
+  .max(2_800_000, '单张图片不能超过 2MB');
+
+export const ScreenshotExtractRequestSchema = z.object({
+  images: z.array(ImageDataUrlSchema).min(1).max(3),
+  language: z.enum(['zh-CN', 'en-US']).optional(),
+  captcha_token: z.string().optional(),
+});
+
 export const HrAnalysisRequestSchema = z.object({
   report_id: z.string().regex(/^rep_[a-z0-9]{12}$/).optional(),
   user_question: z.string().min(10).max(500),

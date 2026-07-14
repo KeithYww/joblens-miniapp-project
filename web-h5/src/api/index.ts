@@ -5,6 +5,8 @@ import type {
   HrAnalysisRequest,
   InterviewFeedbackRequest,
   ReportFeedbackRequest,
+  ScreenshotExtractRequest,
+  ScreenshotExtractResult,
   ApiError,
 } from '@/types';
 
@@ -65,6 +67,14 @@ async function fetchApi<T>(
 }
 
 export const api = {
+  ocr: {
+    extractJob: async (data: ScreenshotExtractRequest): Promise<ScreenshotExtractResult> => {
+      return fetchApi('/api/ocr/extract-job', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+  },
   reports: {
     detect: async (data: DetectRequest): Promise<RiskReport> => {
       return fetchApi('/api/reports/detect', {
