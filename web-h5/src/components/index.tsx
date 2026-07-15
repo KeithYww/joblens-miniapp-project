@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { AlertTriangle, CheckCircle, AlertCircle, Info } from 'lucide-react';
+import { AlertTriangle, CheckCircle, AlertCircle, Info, Copy } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import type { RiskLevel, Confidence } from '@/types';
 
@@ -189,17 +189,30 @@ export function QuestionCard({ questions }: { questions: string[] }) {
   const { locale } = useI18n();
   const isEnglish = locale === 'en-US';
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [copyFailedIndex, setCopyFailedIndex] = useState<number | null>(null);
   const [showAllQuestions, setShowAllQuestions] = useState(false);
 
   const copyToClipboard = useCallback(async (text: string, index: number) => {
+    setCopyFailedIndex(null);
+
     try {
-      await navigator.clipboard.writeText(text);
+      if (window.isSecureContext && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          copyTextWithSelection(text);
+        }
+      } else {
+        copyTextWithSelection(text);
+      }
+
       setCopiedIndex(index);
       setTimeout(() => setCopiedIndex(null), 2000);
     } catch {
-      console.error(isEnglish ? 'Copy failed' : '复制失败');
+      setCopiedIndex(null);
+      setCopyFailedIndex(index);
     }
-  }, [isEnglish]);
+  }, []);
 
   if (questions.length === 0) {
     return null;
@@ -227,14 +240,27 @@ export function QuestionCard({ questions }: { questions: string[] }) {
               <p className="text-sm text-gray-700">{question}</p>
             </div>
             <button
+              type="button"
               onClick={() => copyToClipboard(question, index)}
-              className="flex-shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-primary-50 text-primary-600 hover:bg-primary-100 transition-colors"
+              aria-label={isEnglish ? `Copy question ${index + 1}` : `复制第 ${index + 1} 个问题`}
+              className="inline-flex min-w-16 flex-shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary-50 px-3 py-1.5 text-xs font-medium text-primary-600 transition-colors hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-primary-300"
             >
+              {copiedIndex === index ? <CheckCircle className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
               {copiedIndex === index ? (isEnglish ? 'Copied' : '已复制') : (isEnglish ? 'Copy' : '复制')}
             </button>
+            {copyFailedIndex === index && (
+              <span className="sr-only" role="alert">
+                {isEnglish ? 'Copy failed. Please select and copy the question manually.' : '复制失败，请长按问题文字手动复制。'}
+              </span>
+            )}
           </div>
         ))}
       </div>
+      {copyFailedIndex !== null && (
+        <p className="mt-3 text-xs text-danger-600" role="alert">
+          {isEnglish ? 'Copy failed. Please select and copy the question manually.' : '复制失败，请长按问题文字手动复制。'}
+        </p>
+      )}
       {moreCount > 0 && (
         <div className="mt-3 pt-3 border-t border-gray-200">
           <button
@@ -250,6 +276,28 @@ export function QuestionCard({ questions }: { questions: string[] }) {
       )}
     </div>
   );
+}
+
+function copyTextWithSelection(text: string) {
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', '');
+  textArea.style.position = 'fixed';
+  textArea.style.left = '-9999px';
+  textArea.style.top = '0';
+  textArea.style.opacity = '0';
+  document.body.appendChild(textArea);
+
+  try {
+    textArea.focus({ preventScroll: true });
+    textArea.select();
+    textArea.setSelectionRange(0, text.length);
+    if (!document.execCommand('copy')) {
+      throw new Error('Copy command was rejected');
+    }
+  } finally {
+    textArea.remove();
+  }
 }
 
 export function DisclaimerBanner() {
