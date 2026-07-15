@@ -46,11 +46,57 @@ jobs:
   verify-global:
     needs: context
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     env:
       DEPLOY_SHA: ${{ needs.context.outputs.sha }}
       FRONTEND_URL: https://joblens-miniapp.vercel.app
       API_URL: https://joblens-preview-api.onrender.com
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_API: https://api.render.com/v1
+      RENDER_SERVICE_NAME: joblens-preview-api
     steps:
+      - name: Trigger exact Render backend release
+        run: |
+          set -euo pipefail
+          request() {
+            curl --connect-timeout 10 --max-time 30 --fail --silent --show-error \
+              --retry 3 --retry-all-errors \
+              -H 'Accept: application/json' \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$@"
+          }
+
+          owner_id="$(request "$RENDER_API/owners?limit=1" | jq -r '.[0].owner.id // .[0].id // empty')"
+          test -n "$owner_id"
+          service_id="$(request "$RENDER_API/services?name=$RENDER_SERVICE_NAME&ownerId=$owner_id&limit=1" |
+            jq -r '.[0].service.id // .[0].id // empty')"
+          test -n "$service_id"
+
+          deploy_response="$(request -X POST -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg commitId "$DEPLOY_SHA" '{commitId:$commitId,clearCache:"do_not_clear"}')" \
+            "$RENDER_API/services/$service_id/deploys")"
+          deploy_id="$(jq -r '.deploy.id // .id // empty' <<<"$deploy_response")"
+          test -n "$deploy_id"
+
+          for _ in $(seq 1 120); do
+            deploy="$(request "$RENDER_API/services/$service_id/deploys/$deploy_id")"
+            status="$(jq -r '.deploy.status // .status // empty' <<<"$deploy")"
+            case "$status" in
+              live)
+                exit 0
+                ;;
+              build_failed|update_failed|canceled|deactivated)
+                echo "Render deployment ended with status: $status" >&2
+                exit 1
+                ;;
+              *)
+                echo "Waiting for Render deployment: ${status:-unknown}"
+                sleep 10
+                ;;
+            esac
+          done
+          echo 'Render deployment did not finish before timeout.' >&2
+          exit 1
       - name: Wait for matching Vercel and Render releases
         run: |
           set -euo pipefail
