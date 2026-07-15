@@ -29,6 +29,30 @@ test('AI switch fails closed for OCR and degrades text analysis to rules', { tim
     assert.equal(report.headers['x-joblens-analysis-source'], 'fallback');
     assert.equal(report.json().analysis_source, 'fallback');
 
+    const englishReport = await app.inject({
+      method: 'POST',
+      url: '/api/reports/detect',
+      headers: { 'x-visitor-id': 'visitor_abcdef1234567890abcdef1234567890' },
+      payload: {
+        jd_text: '招聘运营管理岗位，负责部门流程、客户沟通和表单管理，薪资结构、固定底薪及具体业务边界需要进一步确认。',
+        language: 'en-US',
+      },
+    });
+    assert.equal(englishReport.statusCode, 200);
+    const englishBody = englishReport.json();
+    assert.equal(englishBody.analysis_source, 'fallback');
+    assert.match(englishBody.risk_level, /^(低|中|高|极高)$/);
+    assert.match(englishBody.confidence, /^(低|中|高)$/);
+    assert.doesNotMatch(JSON.stringify({
+      predicted_role: englishBody.predicted_role,
+      risk_types: englishBody.risk_types,
+      evidence: englishBody.evidence,
+      missing_info: englishBody.missing_info,
+      questions: englishBody.questions,
+      recommendation: englishBody.recommendation,
+      disclaimer: englishBody.disclaimer,
+    }), /\p{Script=Han}/u);
+
     const ocr = await app.inject({
       method: 'POST',
       url: '/api/ocr/extract-job',

@@ -247,14 +247,67 @@ function calculateInputHash(
   })).digest('hex');
 }
 
-function localizeReportForResponse(report: RiskReport, language?: 'zh-CN' | 'en-US') {
+const englishReportText = new Map<string, string>([
+  ['固定无责底薪', 'Guaranteed base salary without performance conditions'],
+  ['劳动合同主体', 'Legal entity named in the employment contract'],
+  ['社保缴纳主体', 'Legal entity responsible for social insurance'],
+  ['是否有个人销售指标', 'Whether individual sales targets apply'],
+  ['岗位信息不足，暂不作明确风险判断。', 'There is not enough job information to make a clear risk assessment.'],
+  ['当前输入信息不足以生成明确风险结论。', 'The current input is insufficient to support a clear risk conclusion.'],
+  ['信息不足以判断，建议补充岗位详情或 HR 聊天记录后重新检测。', 'There is not enough information to assess the role. Add job details or the HR conversation and run the check again.'],
+  ['岗位信息不足，建议补充职责、薪资构成、公司主体和 HR 回复后重新检测。', 'Add responsibilities, compensation details, the employing entity, and the HR response before running the check again.'],
+  ['建议先电话确认核心问题，不建议直接线下面试。', 'Confirm the key issues by phone before attending an in-person interview.'],
+  ['该岗位风险较低，建议正常面试。', 'The role appears lower risk based on the available information; proceed with the normal interview process.'],
+  ['管理岗包装销售岗', 'Sales role presented as management'],
+  ['薪资不透明', 'Unclear compensation'],
+  ['涉及贷款', 'Loan-related risk'],
+  ['扣留证件风险', 'Document retention risk'],
+  ['涉及收费', 'Fees required'],
+  ['无薪试岗', 'Unpaid trial work'],
+  ['拉亲友资源', 'Pressure to recruit personal contacts'],
+  ['岗位职责与薪资不匹配', 'Responsibilities and compensation do not align'],
+  ['疑似业务性质需确认', 'Business nature requires confirmation'],
+  ['销售岗', 'Sales role'],
+  ['销售/客户开发岗', 'Sales or business development role'],
+  ['培训贷风险', 'Training-loan risk'],
+  ['养老业务相关岗（需核实具体职责）', 'Pension-related role (specific responsibilities require confirmation)'],
+  ['未明确说明薪资构成和销售指标', 'The compensation structure and sales targets are not stated clearly.'],
+  ['未明确说明底薪和提成构成', 'The base salary and commission structure are not stated clearly.'],
+  ['JD中提到培训费用，可能涉及培训贷', 'The posting mentions training fees, which may involve a training loan.'],
+  ['JD中提到押金或保证金', 'The posting mentions a deposit or security payment.'],
+  ['岗位名称为事业部辅助管理，但职责仅描述笼统的表单和日常管理流程', 'The title suggests business-unit management support, but the duties only describe vague form handling and routine processes.'],
+  ['标注较高薪资与16薪，但要求大专及1-3年经验，未说明固定薪资和业务边界', 'The posting advertises high compensation and 16 salary payments with a low experience threshold, but does not define fixed pay or business boundaries.'],
+  ['是否涉及保险或金融产品销售、客户开发、代理人招募', 'Whether the role involves insurance or financial-product sales, customer acquisition, or agent recruitment'],
+  ['固定无责底薪、提成规则与个人业绩指标', 'Guaranteed base salary, commission rules, and individual performance targets'],
+  ['招聘公司名称、劳动合同主体与社保缴纳主体', 'Recruiting company, employment-contract entity, and social-insurance entity'],
+  ['该岗位是否需要销售保险或金融产品、开发客户或招募代理人？请明确写入 offer。', 'Does this role require selling insurance or financial products, acquiring customers, or recruiting agents? Please state this explicitly in the offer.'],
+  ['30-60K 和 16 薪中，固定无责底薪、提成及个人业绩指标分别是多少？', 'For the advertised 30-60K compensation and 16 salary payments, what are the guaranteed base salary, commission, and individual performance targets?'],
+  ['请提供招聘公司全称、劳动合同主体和社保缴纳主体。', 'Please provide the recruiting company name, employment-contract entity, and social-insurance entity.'],
+  ['岗位的薪资、职责与业务边界信息不匹配。建议先书面确认是否涉及保险/金融产品销售、客户开发或代理人招募，以及固定无责底薪和合同主体，再决定是否面试。', 'The compensation, responsibilities, and business boundaries do not align. Before interviewing, obtain written confirmation about product sales, customer acquisition, agent recruitment, guaranteed base salary, and the contracting entity.'],
+]);
+
+function localizeReportText(text: string): string {
+  const exact = englishReportText.get(text);
+  if (exact) return exact;
+  const missingQuestion = text.match(/^(.+)是多少？是否可以提供书面说明？$/);
+  if (missingQuestion) return `What is ${localizeReportText(missingQuestion[1])}? Can you provide it in writing?`;
+  if (text.startsWith('岗位涉及')) return `The posting mentions "${text.slice(4)}".`;
+  if (text.startsWith('岗位包含') && text.endsWith('等销售职责')) {
+    return `The role includes sales duties such as ${text.slice(4, -5)}.`;
+  }
+  return text;
+}
+
+function localizeReportForResponse(report: RiskReport, language?: 'zh-CN' | 'en-US'): RiskReport {
   if (language !== 'en-US') return report;
-  const riskLevels = { '低': 'Low', '中': 'Medium', '高': 'High', '极高': 'Critical' } as const;
-  const confidences = { '低': 'Low', '中': 'Medium', '高': 'High' } as const;
   return {
     ...report,
-    risk_level: riskLevels[report.risk_level],
-    confidence: confidences[report.confidence],
+    predicted_role: report.predicted_role ? localizeReportText(report.predicted_role) : null,
+    risk_types: report.risk_types.map(localizeReportText),
+    evidence: report.evidence.map(localizeReportText),
+    missing_info: report.missing_info.map(localizeReportText),
+    questions: report.questions.map(localizeReportText),
+    recommendation: localizeReportText(report.recommendation),
     disclaimer: 'This result is for job-search decision support only and does not constitute legal advice.',
   };
 }
