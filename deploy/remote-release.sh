@@ -50,6 +50,7 @@ if [ "${TLS_MODE:-http}" = 'ip' ]; then
   upsert_env CADDY_CONFIG_FILE 'Caddyfile.https'
   sudo test -r "$CERTBOT_DIR/live/${SITE_ADDRESS}/fullchain.pem"
   sudo test -r "$CERTBOT_DIR/live/${SITE_ADDRESS}/privkey.pem"
+  sudo rm -rf "/var/lib/docker/volumes/deploy_caddy_data/_data/caddy/certificates/local/${SITE_ADDRESS}"
 else
   upsert_env CADDY_CONFIG_FILE 'Caddyfile'
 fi

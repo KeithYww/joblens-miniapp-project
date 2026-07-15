@@ -1,3 +1,7 @@
+{
+  default_sni {$SITE_ADDRESS}
+}
+
 https://{$SITE_ADDRESS} {
   tls /etc/letsencrypt/live/{$SITE_ADDRESS}/fullchain.pem /etc/letsencrypt/live/{$SITE_ADDRESS}/privkey.pem
 
