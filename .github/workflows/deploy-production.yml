@@ -133,7 +133,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DEPLOY_SHA: ${{ needs.context.outputs.sha }}
-      CHINA_URL: http://43.142.15.246
+      CHINA_URL: https://43-142-15-246.sslip.io
+      CHINA_SITE_ADDRESS: 43-142-15-246.sslip.io
       SSH_HOST: ${{ secrets.CHINA_SSH_HOST }}
       SSH_USER: ${{ secrets.CHINA_SSH_USER }}
       SSH_PRIVATE_KEY: ${{ secrets.CHINA_SSH_PRIVATE_KEY }}
@@ -167,7 +168,7 @@ jobs:
           ssh_opts=(-i ~/.ssh/joblens_deploy -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
           scp "${ssh_opts[@]}" "/tmp/joblens-$DEPLOY_SHA.tar.gz" "$SSH_USER@$SSH_HOST:$remote_archive"
           ssh "${ssh_opts[@]}" "$SSH_USER@$SSH_HOST" \
-            "DEPLOY_SHA='$DEPLOY_SHA' ARCHIVE_PATH='$remote_archive' PUBLIC_ORIGIN='$CHINA_URL' SITE_ADDRESS=':80' CAPTCHA_MODE='disabled' sh -s" \
+            "DEPLOY_SHA='$DEPLOY_SHA' ARCHIVE_PATH='$remote_archive' PUBLIC_ORIGIN='$CHINA_URL' SITE_ADDRESS='$CHINA_SITE_ADDRESS' CAPTCHA_MODE='disabled' sh -s" \
             < deploy/remote-release.sh
       - name: Smoke test China production
         run: |

@@ -18,7 +18,7 @@ jobs:
     env:
       API_URL: https://joblens-preview-api.onrender.com
       FRONTEND_URL: https://joblens-miniapp.vercel.app
-      CHINA_URL: http://43.142.15.246
+      CHINA_URL: https://43-142-15-246.sslip.io
       MONITORING_TOKEN: ${{ secrets.MONITORING_TOKEN }}
       CHINA_MONITORING_TOKEN: ${{ secrets.CHINA_MONITORING_TOKEN }}
     steps:
