@@ -3,9 +3,81 @@ import { ArrowLeft, CheckCircle, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, ApiRequestError } from '@/api';
 import { TurnstileChallenge } from '@/components/TurnstileChallenge';
+import { LanguageSwitcher, useI18n } from '@/i18n';
 import type { InterviewFeedbackRequest } from '@/types';
 
 export function FeedbackPage() {
+  const { locale } = useI18n();
+  const isEnglish = locale === 'en-US';
+  const copy = isEnglish ? {
+    required: 'Please complete all required fields.',
+    captchaRequired: 'Too many requests. Complete the verification and submit again.',
+    captchaExpired: 'Verification expired. Please complete it again.',
+    captchaLoadFailed: 'Verification failed to load. Refresh the page and try again.',
+    submitFailed: 'Submission failed. Please try again later.',
+    successTitle: 'Feedback submitted',
+    successBody: 'Your anonymous feedback will be reviewed and used to improve job-risk assessments.',
+    backHome: 'Back to home',
+    title: 'Interview feedback',
+    intro: 'Thank you. Your anonymous feedback helps us improve the risk-detection model.',
+    company: 'Company name',
+    companyPlaceholder: 'e.g. Acme Technology',
+    job: 'Job title',
+    jobPlaceholder: 'e.g. Management Trainee',
+    platform: 'Recruitment platform (optional)',
+    platformPlaceholder: 'e.g. LinkedIn',
+    jdClaim: 'What the job posting claimed',
+    jdPlaceholder: 'e.g. A management role responsible for leading a team...',
+    actual: 'What happened in the interview',
+    actualPlaceholder: 'e.g. The actual role required prospecting and selling insurance...',
+    characters: 'characters',
+    riskFlags: 'Risk flags',
+    sales: 'Sales involved',
+    fee: 'Fees required',
+    trainingLoan: 'Training loan involved',
+    deposit: 'Deposit required',
+    mismatch: 'Actual role differed from the posting',
+    recommendation: 'Would you recommend this role?',
+    recommend: 'Recommend',
+    neutral: 'Neutral',
+    notRecommend: 'Do not recommend',
+    submitting: 'Submitting...',
+    submit: 'Submit feedback',
+  } : {
+    required: '请填写必填字段',
+    captchaRequired: '请求较频繁，请完成验证后再次提交。',
+    captchaExpired: '验证已失效，请重新完成验证。',
+    captchaLoadFailed: '验证加载失败，请刷新页面后重试。',
+    submitFailed: '提交失败，请稍后重试',
+    successTitle: '反馈提交成功',
+    successBody: '已匿名提交，审核后将用于优化岗位风险判断。',
+    backHome: '返回首页',
+    title: '面试反馈',
+    intro: '感谢您的反馈！您的反馈将帮助我们优化风险检测模型。所有反馈均为匿名提交。',
+    company: '公司名称',
+    companyPlaceholder: '如：某某科技',
+    job: '岗位名称',
+    jobPlaceholder: '如：储备主管',
+    platform: '招聘平台（选填）',
+    platformPlaceholder: '如：BOSS直聘',
+    jdClaim: 'JD 声称的内容',
+    jdPlaceholder: '如：管理岗，负责团队管理...',
+    actual: '实际面试内容',
+    actualPlaceholder: '如：实际要求开发客户并销售保险产品...',
+    characters: '字',
+    riskFlags: '风险标记',
+    sales: '涉及销售',
+    fee: '涉及收费',
+    trainingLoan: '涉及培训贷',
+    deposit: '涉及押金',
+    mismatch: '实际工作与JD不符',
+    recommendation: '是否推荐给他人',
+    recommend: '推荐',
+    neutral: '中立',
+    notRecommend: '不推荐',
+    submitting: '提交中...',
+    submit: '提交反馈',
+  };
   const [companyName, setCompanyName] = useState('');
   const [jobTitle, setJobTitle] = useState('');
   const [sourcePlatform, setSourcePlatform] = useState('');
@@ -26,7 +98,7 @@ export function FeedbackPage() {
 
   const handleSubmit = useCallback(async () => {
     if (!companyName.trim() || !jobTitle.trim() || !jdClaim.trim() || !interviewActual.trim()) {
-      setError('请填写必填字段');
+      setError(copy.required);
       return;
     }
 
@@ -54,14 +126,14 @@ export function FeedbackPage() {
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
         setCaptchaRequired(true);
-        setError('请求较频繁，请完成验证后再次提交。');
+        setError(copy.captchaRequired);
       } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_FAILED') {
         setCaptchaRequired(true);
         setCaptchaToken('');
         setCaptchaResetSignal(value => value + 1);
-        setError('验证已失效，请重新完成验证。');
+        setError(copy.captchaExpired);
       } else {
-        setError(err instanceof Error ? err.message : '提交失败，请稍后重试');
+        setError(!isEnglish && err instanceof Error ? err.message : copy.submitFailed);
       }
     } finally {
       setIsLoading(false);
@@ -79,6 +151,11 @@ export function FeedbackPage() {
     subjectMismatch,
     recommendToOthers,
     captchaToken,
+    copy.captchaExpired,
+    copy.captchaRequired,
+    copy.required,
+    copy.submitFailed,
+    isEnglish,
   ]);
 
   if (submitted) {
@@ -88,16 +165,16 @@ export function FeedbackPage() {
           <div className="w-16 h-16 rounded-full bg-success-100 flex items-center justify-center mx-auto mb-4">
             <CheckCircle className="w-8 h-8 text-success-600" />
           </div>
-          <h2 className="text-xl font-semibold text-gray-800 mb-2">反馈提交成功</h2>
+          <h2 className="text-xl font-semibold text-gray-800 mb-2">{copy.successTitle}</h2>
           <p className="text-gray-500 mb-6">
-            已匿名提交，审核后将用于优化岗位风险判断。
+            {copy.successBody}
           </p>
           <div className="flex gap-3 justify-center">
             <Link
               to="/"
               className="px-6 py-3 rounded-xl gradient-primary text-white hover:opacity-90"
             >
-              返回首页
+              {copy.backHome}
             </Link>
           </div>
         </div>
@@ -114,10 +191,10 @@ export function FeedbackPage() {
             className="flex items-center gap-2 text-gray-700 hover:text-primary-600"
           >
             <ArrowLeft className="w-5 h-5" />
-            <span className="text-sm font-medium">返回首页</span>
+            <span className="text-sm font-medium">{copy.backHome}</span>
           </Link>
-          <span className="text-lg font-bold text-gray-800">面试反馈</span>
-          <div className="w-20" />
+          <span className="text-lg font-bold text-gray-800">{copy.title}</span>
+          <LanguageSwitcher />
         </div>
       </header>
 
@@ -126,33 +203,33 @@ export function FeedbackPage() {
           <div className="bg-warning-50 rounded-lg p-4">
             <p className="text-sm text-warning-700">
               <AlertCircle className="w-4 h-4 inline mr-1" />
-              感谢您的反馈！您的反馈将帮助我们优化风险检测模型。所有反馈均为匿名提交。
+              {copy.intro}
             </p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-sm font-medium text-gray-700 mb-2 block">
-                公司名称 <span className="text-danger-500">*</span>
+                {copy.company} <span className="text-danger-500">*</span>
               </label>
               <input
                 type="text"
                 value={companyName}
                 onChange={(e) => setCompanyName(e.target.value)}
-                placeholder="如：某某科技"
+                placeholder={copy.companyPlaceholder}
                 className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary-500 focus:ring-primary-200 focus:outline-none focus:ring-2"
                 maxLength={80}
               />
             </div>
             <div>
               <label className="text-sm font-medium text-gray-700 mb-2 block">
-                岗位名称 <span className="text-danger-500">*</span>
+                {copy.job} <span className="text-danger-500">*</span>
               </label>
               <input
                 type="text"
                 value={jobTitle}
                 onChange={(e) => setJobTitle(e.target.value)}
-                placeholder="如：储备主管"
+                placeholder={copy.jobPlaceholder}
                 className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary-500 focus:ring-primary-200 focus:outline-none focus:ring-2"
                 maxLength={80}
               />
@@ -161,13 +238,13 @@ export function FeedbackPage() {
 
           <div>
             <label className="text-sm font-medium text-gray-700 mb-2 block">
-              招聘平台（选填）
+              {copy.platform}
             </label>
             <input
               type="text"
               value={sourcePlatform}
               onChange={(e) => setSourcePlatform(e.target.value)}
-              placeholder="如：BOSS直聘"
+              placeholder={copy.platformPlaceholder}
               className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-primary-500 focus:ring-primary-200 focus:outline-none focus:ring-2"
               maxLength={30}
             />
@@ -175,43 +252,43 @@ export function FeedbackPage() {
 
           <div>
             <label className="text-sm font-medium text-gray-700 mb-2 block">
-              JD 声称的内容 <span className="text-danger-500">*</span>
+              {copy.jdClaim} <span className="text-danger-500">*</span>
             </label>
             <textarea
               value={jdClaim}
               onChange={(e) => setJdClaim(e.target.value)}
-              placeholder="如：管理岗，负责团队管理..."
+              placeholder={copy.jdPlaceholder}
               className="w-full h-20 px-4 py-3 rounded-xl border border-gray-200 focus:border-primary-500 focus:ring-primary-200 focus:outline-none focus:ring-2 resize-none"
               maxLength={500}
             />
-            <div className="text-xs text-gray-400 mt-1">{jdClaim.length}/500 字</div>
+            <div className="text-xs text-gray-400 mt-1">{jdClaim.length}/500 {copy.characters}</div>
           </div>
 
           <div>
             <label className="text-sm font-medium text-gray-700 mb-2 block">
-              实际面试内容 <span className="text-danger-500">*</span>
+              {copy.actual} <span className="text-danger-500">*</span>
             </label>
             <textarea
               value={interviewActual}
               onChange={(e) => setInterviewActual(e.target.value)}
-              placeholder="如：实际要求开发客户并销售保险产品..."
+              placeholder={copy.actualPlaceholder}
               className="w-full h-24 px-4 py-3 rounded-xl border border-gray-200 focus:border-primary-500 focus:ring-primary-200 focus:outline-none focus:ring-2 resize-none"
               maxLength={2000}
             />
-            <div className="text-xs text-gray-400 mt-1">{interviewActual.length}/2000 字</div>
+            <div className="text-xs text-gray-400 mt-1">{interviewActual.length}/2000 {copy.characters}</div>
           </div>
 
           <div>
             <label className="text-sm font-medium text-gray-700 mb-3 block">
-              风险标记
+              {copy.riskFlags}
             </label>
             <div className="grid grid-cols-2 gap-3">
               {[
-                { label: '涉及销售', value: involvesSales, setter: setInvolvesSales },
-                { label: '涉及收费', value: involvesFee, setter: setInvolvesFee },
-                { label: '涉及培训贷', value: involvesTrainingLoan, setter: setInvolvesTrainingLoan },
-                { label: '涉及押金', value: involvesDeposit, setter: setInvolvesDeposit },
-                { label: '实际工作与JD不符', value: subjectMismatch, setter: setSubjectMismatch },
+                { label: copy.sales, value: involvesSales, setter: setInvolvesSales },
+                { label: copy.fee, value: involvesFee, setter: setInvolvesFee },
+                { label: copy.trainingLoan, value: involvesTrainingLoan, setter: setInvolvesTrainingLoan },
+                { label: copy.deposit, value: involvesDeposit, setter: setInvolvesDeposit },
+                { label: copy.mismatch, value: subjectMismatch, setter: setSubjectMismatch },
               ].map((item) => (
                 <label
                   key={item.label}
@@ -246,21 +323,25 @@ export function FeedbackPage() {
 
           <div>
             <label className="text-sm font-medium text-gray-700 mb-3 block">
-              是否推荐给他人
+              {copy.recommendation}
             </label>
             <div className="flex gap-3">
-              {(['推荐', '中立', '不推荐'] as const).map((option) => (
+              {([
+                { value: '推荐', label: copy.recommend },
+                { value: '中立', label: copy.neutral },
+                { value: '不推荐', label: copy.notRecommend },
+              ] as const).map((option) => (
                 <button
-                  key={option}
+                  key={option.value}
                   type="button"
-                  onClick={() => setRecommendToOthers(option)}
+                  onClick={() => setRecommendToOthers(option.value)}
                   className={`flex-1 py-3 rounded-xl font-medium transition-colors ${
-                    recommendToOthers === option
+                    recommendToOthers === option.value
                       ? 'gradient-primary text-white'
                       : 'border border-gray-200 text-gray-600 hover:border-gray-300'
                   }`}
                 >
-                  {option}
+                  {option.label}
                 </button>
               ))}
             </div>
@@ -275,7 +356,7 @@ export function FeedbackPage() {
           {captchaRequired && (
             <TurnstileChallenge
               onVerify={setCaptchaToken}
-              onError={() => setError('验证加载失败，请刷新页面后重试。')}
+              onError={() => setError(copy.captchaLoadFailed)}
               resetSignal={captchaResetSignal}
             />
           )}
@@ -288,10 +369,10 @@ export function FeedbackPage() {
             {isLoading ? (
               <>
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin inline mr-2" />
-                <span>提交中...</span>
+                <span>{copy.submitting}</span>
               </>
             ) : (
-              '提交反馈'
+              copy.submit
             )}
           </button>
         </div>
