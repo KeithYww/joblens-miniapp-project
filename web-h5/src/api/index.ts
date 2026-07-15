@@ -151,8 +151,9 @@ export const api = {
         body: JSON.stringify(data),
       });
     },
-    get: async (id: string): Promise<RiskReport> => {
-      return fetchApi(`/api/reports/${id}`);
+    get: async (id: string, language?: 'zh-CN' | 'en-US'): Promise<RiskReport> => {
+      const query = language ? `?language=${encodeURIComponent(language)}` : '';
+      return fetchApi(`/api/reports/${id}${query}`);
     },
     delete: async (id: string, captchaToken?: string): Promise<{ status: string; message: string; deleted_at: string }> => {
       return fetchApi(`/api/reports/${id}`, {

@@ -53,6 +53,22 @@ test('AI switch fails closed for OCR and degrades text analysis to rules', { tim
       disclaimer: englishBody.disclaimer,
     }), /\p{Script=Han}/u);
 
+    const reloadedEnglishReport = await app.inject({
+      method: 'GET',
+      url: `/api/reports/${englishBody.report_id}?language=en-US`,
+      headers: { 'x-visitor-id': 'visitor_abcdef1234567890abcdef1234567890' },
+    });
+    assert.equal(reloadedEnglishReport.statusCode, 200);
+    assert.doesNotMatch(JSON.stringify({
+      predicted_role: reloadedEnglishReport.json().predicted_role,
+      risk_types: reloadedEnglishReport.json().risk_types,
+      evidence: reloadedEnglishReport.json().evidence,
+      missing_info: reloadedEnglishReport.json().missing_info,
+      questions: reloadedEnglishReport.json().questions,
+      recommendation: reloadedEnglishReport.json().recommendation,
+      disclaimer: reloadedEnglishReport.json().disclaimer,
+    }), /\p{Script=Han}/u);
+
     const ocr = await app.inject({
       method: 'POST',
       url: '/api/ocr/extract-job',

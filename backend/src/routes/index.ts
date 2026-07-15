@@ -945,10 +945,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const visitorId = requireVisitorId(request, reply);
     if (!visitorId) return;
     const reportId = (request.params as { id: string }).id;
+    const language = (request.query as { language?: string }).language;
+    if (language !== undefined && language !== 'zh-CN' && language !== 'en-US') {
+      return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '不支持的语言。'));
+    }
     try {
       const owned = await findOwnedReport(reportId, visitorId);
       if (!owned) return reply.status(404).send(buildErrorResponse('REPORT_NOT_FOUND', '报告不存在或已删除。'));
-      return reply.send(owned.report);
+      return reply.send(localizeReportForResponse(owned.report, language));
     } catch (error) {
       logInternalFailure(request, 'report_lookup', error);
       return reply.status(500).send(buildErrorResponse('INTERNAL_ERROR', '服务暂时不可用，请稍后重试。'));

@@ -60,7 +60,7 @@ export function ReportPage() {
     setIsLoading(true);
     setError('');
     try {
-      const data = await api.reports.get(id);
+      const data = await api.reports.get(id, locale);
       setReport(data);
     } catch (err) {
       const errorMsg = !isEnglish && err instanceof Error ? err.message : copy.loadFailed;
@@ -68,7 +68,7 @@ export function ReportPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [copy.loadFailed, id, isEnglish]);
+  }, [copy.loadFailed, id, isEnglish, locale]);
 
   useEffect(() => {
     loadReport();
