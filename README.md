@@ -5,10 +5,16 @@
 ## 在线体验
 
 ### 国内访问（无需翻墙）
-- [http://43.142.15.246](http://43.142.15.246) — 腾讯云部署，国内访问更快
+- [https://43.142.15.246](https://43.142.15.246) — 腾讯云独立部署，使用可信 IP HTTPS 证书，无需域名
 
 ### 海外访问
 - [https://joblens-miniapp.vercel.app](https://joblens-miniapp.vercel.app) — Vercel 部署
+
+两套生产环境由同一条 GitHub Actions 发布流水线部署，并以同一个 Git commit SHA 通过发布门禁：
+
+- **全球环境**：Vercel 前端 + Render 后端、PostgreSQL 和 Redis。
+- **中国环境**：腾讯云上的 Caddy、Fastify、PostgreSQL 和 Redis Docker Compose 服务。
+- **数据完全隔离**：数据库、缓存、报告、反馈、额度和管理凭据均不跨环境共享。
 
 ## 🚀 项目状态
 
@@ -41,8 +47,9 @@
 
 ## 管理后台
 
-- **线上入口**：[https://joblens-miniapp.vercel.app/admin](https://joblens-miniapp.vercel.app/admin)
-- **身份验证**：使用服务端独立配置的 `ADMIN_TOKEN`；Token 只保存在当前浏览器标签页的 `sessionStorage`，关闭标签页后失效。
+- **全球环境入口**：[https://joblens-miniapp.vercel.app/admin](https://joblens-miniapp.vercel.app/admin)
+- **中国环境入口**：[https://43.142.15.246/admin](https://43.142.15.246/admin)
+- **身份验证**：两个环境分别使用服务端配置的独立 `ADMIN_TOKEN`，不可交叉登录；Token 只保存在当前浏览器标签页的 `sessionStorage`，关闭标签页后失效。
 - **经营总览**：查看 1/7/30 天报告量、模型调用率、高风险占比、成本、平均耗时、待审核反馈和 AI 日预算。
 - **分析质量**：按报告 ID、公司、岗位、风险等级和分析来源检索报告，并查看证据、信息缺口与追问建议。
 - **反馈审核**：集中审核报告纠错和面试反馈，支持通过、驳回、待审及内部备注。
@@ -192,7 +199,7 @@ QWENCLOUD_API_KEY=your-api-key
 
 使用腾讯云/阿里云等国内服务器，Docker Compose 一键部署：
 
-详细步骤请参考：[docs/32-china-deployment-guide.md](docs/32-china-deployment-guide.md)
+详细步骤请参考：[deploy/README.md](deploy/README.md)
 
 **快速启动：**
 ```bash
@@ -207,8 +214,10 @@ docker compose up -d --build
 
 **注意事项：**
 - 国内部署建议使用 **SiliconFlow** 作为 AI 提供商（国内访问更快）
+- 国内数据库、Redis、AI 配置和运维 Token 必须与全球环境完全隔离
+- 无域名部署使用 Let's Encrypt 短期 IP 证书，HTTP 自动跳转 HTTPS，并由服务器每日检查续期
+- `main` 分支通过 CI 后自动部署同一 commit SHA 到全球和中国环境；任一环境版本或健康检查不一致，发布门禁均不会通过
 - 推荐模型：`Qwen/Qwen2.5-72B-Instruct`（非推理模型，兼容性更好）
-- 国内服务器无需配置 HTTPS，使用 HTTP 即可正常访问
 - 前端内置「设置」功能，可手动配置 API 服务地址
 
 ### 方案三：传统服务器部署（需要购买服务器）
