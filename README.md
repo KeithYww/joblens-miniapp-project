@@ -36,6 +36,19 @@
 已实现增强：
 
 - 上传岗位截图识别与确认编辑（1-3 张 PNG/JPEG/WebP，单张最大 2MB）
+- 中英文界面及英文岗位分析报告
+- 安全运营管理后台
+
+## 管理后台
+
+- **线上入口**：[https://joblens-miniapp.vercel.app/admin](https://joblens-miniapp.vercel.app/admin)
+- **身份验证**：使用服务端独立配置的 `ADMIN_TOKEN`；Token 只保存在当前浏览器标签页的 `sessionStorage`，关闭标签页后失效。
+- **经营总览**：查看 1/7/30 天报告量、模型调用率、高风险占比、成本、平均耗时、待审核反馈和 AI 日预算。
+- **分析质量**：按报告 ID、公司、岗位、风险等级和分析来源检索报告，并查看证据、信息缺口与追问建议。
+- **反馈审核**：集中审核报告纠错和面试反馈，支持通过、驳回、待审及内部备注。
+- **系统与安全**：查看 API 成功率、客户端/服务端错误、模型调用、限流、验证码和安全事件。
+
+管理接口均位于 `/api/admin/*`，使用独立 Bearer Token 鉴权；返回数据不包含 IP、visitor ID、User-Agent 和输入哈希。产品需求、评审结论和技术设计分别见 [管理后台产品需求](docs/36-admin-product-requirements.md)、[多方评审纪要](docs/37-admin-product-technical-review.md)和[技术设计](docs/38-admin-technical-design.md)。
 
 后续增强：
 
@@ -230,6 +243,10 @@ joblens-miniapp-project/
 | `/api/reports/:id` | DELETE | 删除报告 |
 | `/api/hr-analysis` | POST | HR 回复分析 |
 | `/api/ocr/extract-job` | POST | 岗位截图 OCR 提取与确认编辑前回填 |
+| `/api/admin/overview` | GET | 管理后台经营与系统总览 |
+| `/api/admin/reports` | GET | 管理后台报告检索与质量分析 |
+| `/api/admin/feedbacks` | GET/PATCH | 管理后台反馈列表与审核 |
+| `/api/admin/security` | GET | 管理后台安全与 API 指标 |
 
 详细文档: [docs/19-api-contract.md](docs/19-api-contract.md)
 
