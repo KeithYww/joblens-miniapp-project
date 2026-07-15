@@ -30,7 +30,7 @@ import {
   verifyCaptcha,
 } from '../services/rateLimit';
 import { startDataRetentionScheduler } from '../services/dataRetention';
-import { extractJobFromScreenshots, ScreenshotExtractionTimeoutError } from '../services/screenshotExtraction';
+import { extractJobFromScreenshots, ScreenshotExtractionTimeoutError, ScreenshotNoJobInformationError } from '../services/screenshotExtraction';
 import {
   acquireAiConcurrency,
   getAiQuotaSnapshot,
@@ -928,14 +928,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     } catch (error) {
       if (error instanceof LlmConfigurationError) await refundAiQuota(quota.reservation);
       const timedOut = error instanceof ScreenshotExtractionTimeoutError;
-      const httpStatus = timedOut ? 504 : 502;
-      const errorCode = timedOut ? 'OCR_TIMEOUT' : 'OCR_UNAVAILABLE';
-      const errorMessage = timedOut ? '截图识别超时' : '截图识别服务暂时不可用';
+      const noJobInformation = error instanceof ScreenshotNoJobInformationError;
+      const httpStatus = timedOut ? 504 : noJobInformation ? 422 : 502;
+      const errorCode = timedOut ? 'OCR_TIMEOUT' : noJobInformation ? 'NO_JOB_INFORMATION' : 'OCR_UNAVAILABLE';
+      const errorMessage = timedOut ? '截图识别超时' : noJobInformation ? '截图中未找到招聘信息' : '截图识别服务暂时不可用';
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus, errorCode, errorMessage });
-      logInternalFailure(request, 'screenshot_extraction', error);
+      if (!noJobInformation) logInternalFailure(request, 'screenshot_extraction', error);
       return reply.status(httpStatus).send(buildErrorResponse(errorCode, timedOut
         ? '截图识别超时，请重试或手动填写。'
-        : '截图识别服务暂时不可用，请稍后重试或手动填写。'));
+        : noJobInformation
+          ? '截图中未识别到可用的招聘信息，请上传包含岗位职责或任职要求的截图。'
+          : '截图识别服务暂时不可用，请稍后重试或手动填写。'));
     } finally {
       await releaseAiConcurrency(lease);
     }

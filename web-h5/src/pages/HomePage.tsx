@@ -151,6 +151,10 @@ export function HomePage() {
         void refreshQuota();
       } else if (err instanceof ApiRequestError && err.code === 'AI_BUSY') {
         setError(isEnglish ? 'AI is busy. Try again in 10 seconds.' : '当前使用人数较多，请 10 秒后重试。');
+      } else if (err instanceof ApiRequestError && err.code === 'NO_JOB_INFORMATION') {
+        setError(isEnglish
+          ? 'No usable recruitment information was found. Upload a screenshot that includes role responsibilities or requirements.'
+          : '截图中未识别到可用的招聘信息，请上传包含岗位职责或任职要求的截图。');
       } else {
         setError(err instanceof Error ? err.message : (isEnglish ? 'Screenshot extraction failed. Please try again later.' : '截图识别失败，请稍后重试。'));
       }
