@@ -2,9 +2,13 @@
 
 `职镜 JobLens` 是一款面向求职者的岗位风险检测 Web/H5 工具。第一版聚焦"岗位信息是否透明、JD 是否存在包装、HR 是否回避关键问题、是否需要继续面试前追问"，暂不做全网岗位库、企业黑名单、复杂社区和付费会员。
 
-## 在线体验（需要翻墙）
+## 在线体验
 
-- [https://joblens-miniapp.vercel.app](https://joblens-miniapp.vercel.app)
+### 国内访问（无需翻墙）
+- [http://43.142.15.246](http://43.142.15.246) — 腾讯云部署，国内访问更快
+
+### 海外访问
+- [https://joblens-miniapp.vercel.app](https://joblens-miniapp.vercel.app) — Vercel 部署
 
 ## 🚀 项目状态
 
@@ -171,7 +175,30 @@ QWENCLOUD_API_KEY=your-api-key
    - 在 Vercel 项目设置中添加 `VITE_API_BASE_URL=https://your-render-service.onrender.com/api`
    - 添加 Cloudflare Turnstile 公钥：`VITE_TURNSTILE_SITE_KEY=your-site-key`
 
-### 方案二：传统服务器部署（需要购买服务器）
+### 方案二：国内服务器部署（推荐国内用户）
+
+使用腾讯云/阿里云等国内服务器，Docker Compose 一键部署：
+
+详细步骤请参考：[docs/32-china-deployment-guide.md](docs/32-china-deployment-guide.md)
+
+**快速启动：**
+```bash
+cd deploy
+
+# 复制并修改环境变量
+cp .env.production.example .env
+
+# 启动所有服务
+docker compose up -d --build
+```
+
+**注意事项：**
+- 国内部署建议使用 **SiliconFlow** 作为 AI 提供商（国内访问更快）
+- 推荐模型：`Qwen/Qwen2.5-72B-Instruct`（非推理模型，兼容性更好）
+- 国内服务器无需配置 HTTPS，使用 HTTP 即可正常访问
+- 前端内置「设置」功能，可手动配置 API 服务地址
+
+### 方案三：传统服务器部署（需要购买服务器）
 
 详细步骤请参考：[docs/26-deployment-guide.md](docs/26-deployment-guide.md)
 

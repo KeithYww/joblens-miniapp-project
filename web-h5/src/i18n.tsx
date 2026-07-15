@@ -13,6 +13,12 @@ const messages = {
     privacy: '隐私说明',
     disclaimer: '免责声明',
     brand: '职镜 JobLens',
+    settings: '设置',
+    apiServer: 'API 服务地址',
+    apiUrlHint: '部署后端后填写你的 API 服务地址，保存后立即生效。',
+    saved: '已保存',
+    save: '保存',
+    reset: '重置',
   },
   'en-US': {
     language: 'Language',
@@ -22,6 +28,12 @@ const messages = {
     privacy: 'Privacy',
     disclaimer: 'Disclaimer',
     brand: 'JobLens',
+    settings: 'Settings',
+    apiServer: 'API Server',
+    apiUrlHint: 'Enter your API server address after deploying backend. Changes take effect immediately.',
+    saved: 'Saved',
+    save: 'Save',
+    reset: 'Reset',
   },
 } as const;
 

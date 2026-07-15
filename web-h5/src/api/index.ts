@@ -12,8 +12,31 @@ import type {
   ClientErrorReport,
 } from '@/types';
 
-const configuredApiUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:3000';
-const API_BASE_URL = configuredApiUrl.replace(/\/+$/, '').replace(/\/api$/, '');
+const CUSTOM_API_URL_KEY = 'custom_api_base_url';
+
+function getApiBaseUrl(): string {
+  const customUrl = localStorage.getItem(CUSTOM_API_URL_KEY);
+  if (customUrl && customUrl.trim()) {
+    return customUrl.replace(/\/+$/, '').replace(/\/api$/, '');
+  }
+  const configuredApiUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '';
+  return configuredApiUrl.replace(/\/+$/, '').replace(/\/api$/, '');
+}
+
+let API_BASE_URL = getApiBaseUrl();
+
+export function setApiBaseUrl(url: string) {
+  if (url && url.trim()) {
+    localStorage.setItem(CUSTOM_API_URL_KEY, url.trim());
+  } else {
+    localStorage.removeItem(CUSTOM_API_URL_KEY);
+  }
+  API_BASE_URL = getApiBaseUrl();
+}
+
+export function getStoredApiBaseUrl(): string {
+  return localStorage.getItem(CUSTOM_API_URL_KEY) || '';
+}
 
 export class ApiRequestError extends Error {
   readonly code: string;
@@ -29,10 +52,21 @@ export class ApiRequestError extends Error {
   }
 }
 
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 function getVisitorId(): string {
   let visitorId = localStorage.getItem('visitor_id');
   if (!visitorId || !/^visitor_(?:[a-f0-9]{12}|[a-f0-9]{32})$/.test(visitorId)) {
-    visitorId = `visitor_${crypto.randomUUID().replace(/-/g, '')}`;
+    visitorId = `visitor_${generateUUID().replace(/-/g, '')}`;
     localStorage.setItem('visitor_id', visitorId);
   }
   return visitorId;
