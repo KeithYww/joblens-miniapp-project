@@ -18,4 +18,5 @@ RUN npm run build
 FROM caddy:2.10-alpine
 
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
+COPY deploy/Caddyfile.https /etc/caddy/Caddyfile.https
 COPY --from=build /app/dist /srv

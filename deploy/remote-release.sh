@@ -42,6 +42,17 @@ upsert_env() {
 upsert_env PUBLIC_ORIGIN "$PUBLIC_ORIGIN"
 upsert_env SITE_ADDRESS "${SITE_ADDRESS:-:80}"
 upsert_env CAPTCHA_MODE "${CAPTCHA_MODE:-disabled}"
+upsert_env TLS_MODE "${TLS_MODE:-http}"
+
+if [ "${TLS_MODE:-http}" = 'ip' ]; then
+  CERTBOT_DIR=${CERTBOT_DIR:-$ROOT_DIR/certbot}
+  upsert_env CERTBOT_DIR "$CERTBOT_DIR"
+  upsert_env CADDY_CONFIG_FILE 'Caddyfile.https'
+  sudo test -r "$CERTBOT_DIR/live/${SITE_ADDRESS}/fullchain.pem"
+  sudo test -r "$CERTBOT_DIR/live/${SITE_ADDRESS}/privkey.pem"
+else
+  upsert_env CADDY_CONFIG_FILE 'Caddyfile'
+fi
 
 for required in POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD AI_PROVIDER MONITORING_TOKEN BACKUP_TOKEN ADMIN_TOKEN; do
   value=$(sed -n "s/^${required}=//p" "$ENV_FILE" | tail -1)
@@ -105,6 +116,11 @@ if [ "$healthy" != 'true' ]; then
 fi
 
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK"
+if [ "${TLS_MODE:-http}" = 'ip' ]; then
+  printf '%s\n' '17 3 * * * root /opt/joblens/current/deploy/renew-ip-certificate.sh >> /var/log/joblens-certbot.log 2>&1' \
+    | sudo tee /etc/cron.d/joblens-certbot >/dev/null
+  sudo chmod 644 /etc/cron.d/joblens-certbot
+fi
 find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} +
 find "$BACKUP_DIR" -type f -name 'joblens-*.dump' -mtime +14 -delete
 rm -f "$ARCHIVE_PATH"

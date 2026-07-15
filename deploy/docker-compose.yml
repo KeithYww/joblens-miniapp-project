@@ -88,9 +88,11 @@ services:
         VITE_TURNSTILE_SITE_KEY: ${VITE_TURNSTILE_SITE_KEY:-}
         BUILD_SHA: ${BUILD_SHA:-development}
     restart: unless-stopped
+    command: ["caddy", "run", "--config", "/etc/caddy/${CADDY_CONFIG_FILE:-Caddyfile}", "--adapter", "caddyfile"]
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
       ACME_EMAIL: ${ACME_EMAIL:-}
+      CADDY_CONFIG_FILE: ${CADDY_CONFIG_FILE:-Caddyfile}
     depends_on:
       - backend
     ports:
@@ -99,6 +101,7 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+      - ${CERTBOT_DIR:-/opt/joblens/certbot}:/etc/letsencrypt:ro
     networks: [internal]
 
 networks:

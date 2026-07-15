@@ -9,10 +9,10 @@ from the global production environment.
 
 1. Buy an Ubuntu 22.04 or 24.04 instance with at least 2 vCPU, 2 GB RAM,
    and a public IPv4 address. Open TCP ports `80` and `443` in the Lighthouse firewall.
-2. For temporary IP-only access set `SITE_ADDRESS=:80` and
-   `PUBLIC_ORIGIN=http://SERVER_IP`. This sends traffic without encryption and is
-   suitable only for controlled testing. A public production release should use
-   a filed domain and HTTPS.
+2. The production workflow uses a free, short-lived Let's Encrypt IP certificate.
+   Set `SITE_ADDRESS` to the public IP, `PUBLIC_ORIGIN=https://SERVER_IP`, and
+   `TLS_MODE=ip`. The certificate must already exist under
+   `/opt/joblens/certbot/live/SERVER_IP`; `renew-ip-certificate.sh` renews it daily.
 3. Install Docker Engine and the Docker Compose plugin on the instance.
 4. Clone the repository and switch to `main`.
 5. Copy the secret template and restrict it:
