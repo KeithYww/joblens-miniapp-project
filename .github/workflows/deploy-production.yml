@@ -1,0 +1,151 @@
+name: Deploy Both Productions
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      deploy_sha:
+        description: Full commit SHA to deploy; defaults to the current main SHA
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  context:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - name: Resolve release SHA
+        id: release
+        env:
+          REQUESTED_SHA: ${{ inputs.deploy_sha }}
+          WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          sha="${REQUESTED_SHA:-${WORKFLOW_SHA:-}}"
+          if [ -z "$sha" ]; then
+            sha="$(git ls-remote https://github.com/${{ github.repository }}.git refs/heads/main | awk '{print $1}')"
+          fi
+          test "${#sha}" = '40'
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  verify-global:
+    needs: context
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_SHA: ${{ needs.context.outputs.sha }}
+      FRONTEND_URL: https://joblens-miniapp.vercel.app
+      API_URL: https://joblens-preview-api.onrender.com
+    steps:
+      - name: Wait for matching Vercel and Render releases
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            frontend_version="$(curl --silent --show-error --location --max-time 30 "$FRONTEND_URL/version.json" | jq -r '.version // empty' 2>/dev/null || true)"
+            backend_version="$(curl --silent --show-error --location --max-time 30 "$API_URL/api/health" | jq -r '.version // empty' 2>/dev/null || true)"
+            if [ "$frontend_version" = "$DEPLOY_SHA" ] && [ "$backend_version" = "$DEPLOY_SHA" ]; then
+              exit 0
+            fi
+            echo "Waiting for global release: frontend=${frontend_version:-unavailable}, backend=${backend_version:-unavailable}"
+            sleep 10
+          done
+          echo "Global services did not reach $DEPLOY_SHA before timeout." >&2
+          exit 1
+      - name: Smoke test global production
+        run: |
+          set -euo pipefail
+          for path in / /privacy /disclaimer /admin; do
+            curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+              --connect-timeout 20 --max-time 120 "$FRONTEND_URL$path" >/dev/null
+          done
+          health="$(curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 "$API_URL/api/health")"
+          test "$(jq -r '.status' <<<"$health")" = 'ok'
+          test "$(jq -r '.dependencies.database' <<<"$health")" = 'true'
+          test "$(jq -r '.dependencies.redis' <<<"$health")" = 'true'
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 \
+            -H 'X-Visitor-Id: visitor_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+            "$API_URL/api/ai-quota" >/dev/null
+
+  deploy-china:
+    needs: context
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_SHA: ${{ needs.context.outputs.sha }}
+      CHINA_URL: http://43.142.15.246
+      SSH_HOST: ${{ secrets.CHINA_SSH_HOST }}
+      SSH_USER: ${{ secrets.CHINA_SSH_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.CHINA_SSH_PRIVATE_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.CHINA_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+      - name: Prepare immutable release archive
+        run: |
+          set -euo pipefail
+          tar --create --gzip --file "/tmp/joblens-$DEPLOY_SHA.tar.gz" \
+            --exclude='.git' --exclude='node_modules' --exclude='dist' \
+            --exclude='.env' --exclude='.env.*' --exclude='backups' .
+      - name: Configure pinned SSH access
+        run: |
+          set -euo pipefail
+          test -n "$SSH_HOST"
+          test -n "$SSH_USER"
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/joblens_deploy
+          chmod 600 ~/.ssh/joblens_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Deploy exact SHA to isolated China stack
+        run: |
+          set -euo pipefail
+          remote_archive="/tmp/joblens-$DEPLOY_SHA.tar.gz"
+          ssh_opts=(-i ~/.ssh/joblens_deploy -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          scp "${ssh_opts[@]}" "/tmp/joblens-$DEPLOY_SHA.tar.gz" "$SSH_USER@$SSH_HOST:$remote_archive"
+          ssh "${ssh_opts[@]}" "$SSH_USER@$SSH_HOST" \
+            "DEPLOY_SHA='$DEPLOY_SHA' ARCHIVE_PATH='$remote_archive' PUBLIC_ORIGIN='$CHINA_URL' SITE_ADDRESS=':80' CAPTCHA_MODE='disabled' sh -s" \
+            < deploy/remote-release.sh
+      - name: Smoke test China production
+        run: |
+          set -euo pipefail
+          for path in / /privacy /disclaimer /admin; do
+            curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+              --connect-timeout 20 --max-time 120 "$CHINA_URL$path" >/dev/null
+          done
+          version="$(curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 "$CHINA_URL/version.json" | jq -r '.version')"
+          test "$version" = "$DEPLOY_SHA"
+          health="$(curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 "$CHINA_URL/api/health")"
+          test "$(jq -r '.status' <<<"$health")" = 'ok'
+          test "$(jq -r '.version' <<<"$health")" = "$DEPLOY_SHA"
+          test "$(jq -r '.dependencies.database' <<<"$health")" = 'true'
+          test "$(jq -r '.dependencies.redis' <<<"$health")" = 'true'
+          curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 \
+            -H 'X-Visitor-Id: visitor_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+            "$CHINA_URL/api/ai-quota" >/dev/null
+
+  release-gate:
+    needs: [context, verify-global, deploy-china]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Both isolated production environments are healthy at ${{ needs.context.outputs.sha }}."

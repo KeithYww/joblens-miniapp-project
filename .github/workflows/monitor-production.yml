@@ -18,7 +18,9 @@ jobs:
     env:
       API_URL: https://joblens-preview-api.onrender.com
       FRONTEND_URL: https://joblens-miniapp.vercel.app
+      CHINA_URL: http://43.142.15.246
       MONITORING_TOKEN: ${{ secrets.MONITORING_TOKEN }}
+      CHINA_MONITORING_TOKEN: ${{ secrets.CHINA_MONITORING_TOKEN }}
     steps:
       - name: Check frontend availability
         shell: bash
@@ -96,3 +98,26 @@ jobs:
             echo "AI daily budget reached ${budget_ratio}; investigate usage before the hard limit" >&2
             exit 1
           fi
+
+      - name: Check isolated China production
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CHINA_MONITORING_TOKEN"
+          frontend_file="$(mktemp)"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 "$CHINA_URL/" > "$frontend_file"
+          grep -F '<title>职镜 JobLens - 岗位风险智能检测</title>' "$frontend_file" >/dev/null
+          grep -F '<div id="root"></div>' "$frontend_file" >/dev/null
+          health_file="$(mktemp)"
+          curl --fail --silent --show-error --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 "$CHINA_URL/api/health" > "$health_file"
+          test "$(jq -r '.status' "$health_file")" = 'ok'
+          test "$(jq -r '.dependencies.database' "$health_file")" = 'true'
+          test "$(jq -r '.dependencies.redis' "$health_file")" = 'true'
+          metrics_file="$(mktemp)"
+          curl --fail --silent --show-error --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 \
+            -H "Authorization: Bearer $CHINA_MONITORING_TOKEN" \
+            "$CHINA_URL/api/internal/metrics?window_minutes=30" > "$metrics_file"
+          jq '{window_minutes, requests, frontend_errors, ai_budget}' "$metrics_file"

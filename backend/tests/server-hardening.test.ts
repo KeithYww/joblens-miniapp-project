@@ -15,6 +15,7 @@ test('health reports required dependency degradation and emits security headers'
     const response = await app.inject({ method: 'GET', url: '/api/health' });
     assert.equal(response.statusCode, 503);
     assert.equal(response.json().status, 'degraded');
+    assert.equal(typeof response.json().version, 'string');
     assert.equal(response.headers['cache-control'], 'no-store');
     assert.equal(response.headers['x-content-type-options'], 'nosniff');
     assert.equal(response.headers['x-frame-options'], 'DENY');

@@ -1,15 +1,18 @@
-# Lighthouse production deployment
+# Isolated China production deployment
 
-This directory deploys JobLens as one HTTPS site: Caddy serves the built React app
-and proxies `/api` to Fastify. PostgreSQL and Redis stay on the private Docker
-network and are never exposed through server ports.
+This directory deploys the China production stack independently from the
+Vercel/Render stack. Caddy serves the React app and proxies `/api` to Fastify.
+Its PostgreSQL, Redis, quotas, caches, tokens, feedback, and reports are isolated
+from the global production environment.
 
 ## Before the first deploy
 
-1. Buy an Ubuntu 22.04 or 24.04 Lighthouse instance with at least 2 vCPU, 2 GB RAM,
+1. Buy an Ubuntu 22.04 or 24.04 instance with at least 2 vCPU, 2 GB RAM,
    and a public IPv4 address. Open TCP ports `80` and `443` in the Lighthouse firewall.
-2. Point the production domain's `A` record at the instance public IPv4 address.
-   For a China mainland instance, complete ICP filing before opening the domain.
+2. For temporary IP-only access set `SITE_ADDRESS=:80` and
+   `PUBLIC_ORIGIN=http://SERVER_IP`. This sends traffic without encryption and is
+   suitable only for controlled testing. A public production release should use
+   a filed domain and HTTPS.
 3. Install Docker Engine and the Docker Compose plugin on the instance.
 4. Clone the repository and switch to `main`.
 5. Copy the secret template and restrict it:
@@ -20,8 +23,9 @@ network and are never exposed through server ports.
    openssl rand -hex 24
    ```
 
-6. Put the generated value in `POSTGRES_PASSWORD`, then fill the domain, ACME email,
-   Turnstile keys, and exactly one enabled AI provider key.
+6. Put the generated value in `POSTGRES_PASSWORD`, generate independent admin,
+   monitoring and backup tokens, and configure exactly one AI provider. Do not
+   reuse the global production database, Redis URL, or operational tokens.
 
 ## Deploy and verify
 
@@ -35,6 +39,10 @@ docker compose --env-file deploy/.env.production -f deploy/docker-compose.yml lo
 The first backend startup runs `prisma migrate deploy` before accepting traffic.
 Never commit `deploy/.env.production`, database dumps, or provider keys.
 
+For an IP-only deployment set `CAPTCHA_MODE=disabled` and leave both Turnstile
+keys empty. Production bypass is intentionally unsupported; hard visitor, IP,
+daily-credit and concurrency limits remain active.
+
 ## Backups
 
 Create a daily cron entry that stores a 14-day rolling local PostgreSQL backup:
@@ -46,9 +54,13 @@ Create a daily cron entry that stores a 14-day rolling local PostgreSQL backup:
 For recovery from server loss, copy the generated `backups/*.dump` files to a private
 object-storage bucket. Periodically verify restoration in a non-production database.
 
-## Updating
+## Automated updating
 
-```sh
-git pull --ff-only origin main
-./deploy/deploy.sh
-```
+After CI succeeds on `main`, `.github/workflows/deploy-production.yml` packages the
+exact tested commit, creates a database backup, deploys it through a pinned SSH
+host key, and verifies both frontend and backend versions. The release is accepted
+only when China and global production report the same commit SHA.
+
+The server stores immutable releases under `/opt/joblens/releases`, secrets in
+`/opt/joblens/shared/.env.production`, and local backups in
+`/opt/joblens/backups`. Do not deploy a local working tree with `tar` or `git stash`.

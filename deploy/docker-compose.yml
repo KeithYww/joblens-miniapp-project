@@ -29,6 +29,7 @@ services:
     networks: [internal]
 
   backend:
+    image: joblens-backend:${BUILD_SHA:-development}
     build:
       context: ..
       dockerfile: backend/Dockerfile
@@ -36,9 +37,10 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      APP_VERSION: ${BUILD_SHA:-development}
       TRUST_PROXY: 1
       BODY_LIMIT_BYTES: ${BODY_LIMIT_BYTES:-10485760}
-      CORS_ORIGIN: https://${DOMAIN}
+      CORS_ORIGIN: ${PUBLIC_ORIGIN}
       REQUIRE_DATABASE: "true"
       REQUIRE_REDIS: "true"
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -62,7 +64,8 @@ services:
       AI_MAX_OCR_CONCURRENCY: ${AI_MAX_OCR_CONCURRENCY:-2}
       AI_MAX_ANALYSIS_CONCURRENCY: ${AI_MAX_ANALYSIS_CONCURRENCY:-3}
       OCR_CACHE_TTL_SECONDS: ${OCR_CACHE_TTL_SECONDS:-86400}
-      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+      CAPTCHA_MODE: ${CAPTCHA_MODE:-disabled}
       CAPTCHA_BYPASS: "false"
       DATA_CLEANUP_INTERVAL_MS: ${DATA_CLEANUP_INTERVAL_MS:-3600000}
       MONITORING_TOKEN: ${MONITORING_TOKEN}
@@ -76,16 +79,18 @@ services:
     networks: [internal]
 
   web:
+    image: joblens-web:${BUILD_SHA:-development}
     build:
       context: ..
       dockerfile: web-h5/Dockerfile
       args:
         VITE_API_BASE_URL: /api
-        VITE_TURNSTILE_SITE_KEY: ${VITE_TURNSTILE_SITE_KEY}
+        VITE_TURNSTILE_SITE_KEY: ${VITE_TURNSTILE_SITE_KEY:-}
+        BUILD_SHA: ${BUILD_SHA:-development}
     restart: unless-stopped
     environment:
-      DOMAIN: ${DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL}
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      ACME_EMAIL: ${ACME_EMAIL:-}
     depends_on:
       - backend
     ports:

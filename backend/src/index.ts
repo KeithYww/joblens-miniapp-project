@@ -13,6 +13,11 @@ const configuredCorsOrigins = (process.env.CORS_ORIGIN || '')
   .map(origin => origin.trim())
   .filter(Boolean);
 
+function applicationVersion(): string {
+  const raw = process.env.APP_VERSION || process.env.RENDER_GIT_COMMIT || process.env.GITHUB_SHA || 'development';
+  return raw.trim().slice(0, 64) || 'development';
+}
+
 function readBoundedInteger(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
@@ -117,6 +122,7 @@ export async function createServer(): Promise<FastifyInstance> {
     const healthy = (!databaseRequired || database.available) && (!redisRequired || redisAvailable);
     return reply.status(healthy ? 200 : 503).send({
       status: healthy ? 'ok' : 'degraded',
+      version: applicationVersion(),
       timestamp: new Date().toISOString(),
       dependencies: {
         database: database.available,
