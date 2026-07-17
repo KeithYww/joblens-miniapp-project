@@ -100,7 +100,8 @@ joblens-miniapp-project/
 │   ├── 21-database-schema.md     # P0 数据库 Schema 冻结版本
 │   ├── 22-privacy-retention-design.md # P0 隐私与数据保留策略
 │   ├── 23-test-samples-plan.md   # P0 测试样本计划
-│   └── 24-rate-limit-rules.md    # P0 限流与验证码规则
+│   ├── 24-rate-limit-rules.md    # P0 限流与验证码规则
+│   └── 29-interview-guide.md     # 项目面试讲解与问答指南
 ├── web-h5/                       # Web/H5 前端工程预留目录
 ├── backend/                      # 后端 API / OCR 服务预留目录
 └── design/                       # 设计稿、原型、物料预留目录

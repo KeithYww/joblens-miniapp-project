@@ -248,6 +248,13 @@ function calculateInputHash(
 }
 
 const englishReportText = new Map<string, string>([
+  ['培训贷', 'a training loan'],
+  ['贷款分期', 'loan installments'],
+  ['扣身份证', 'retaining an identity card'],
+  ['扣毕业证', 'retaining a diploma'],
+  ['押金', 'a deposit'],
+  ['保证金', 'a security deposit'],
+  ['先交费', 'an upfront fee'],
   ['固定无责底薪', 'Guaranteed base salary without performance conditions'],
   ['劳动合同主体', 'Legal entity named in the employment contract'],
   ['社保缴纳主体', 'Legal entity responsible for social insurance'],
@@ -286,12 +293,20 @@ const englishReportText = new Map<string, string>([
   ['岗位的薪资、职责与业务边界信息不匹配。建议先书面确认是否涉及保险/金融产品销售、客户开发或代理人招募，以及固定无责底薪和合同主体，再决定是否面试。', 'The compensation, responsibilities, and business boundaries do not align. Before interviewing, obtain written confirmation about product sales, customer acquisition, agent recruitment, guaranteed base salary, and the contracting entity.'],
 ]);
 
-function localizeReportText(text: string): string {
+export function localizeReportText(text: string): string {
   const exact = englishReportText.get(text);
   if (exact) return exact;
   const missingQuestion = text.match(/^(.+)是多少？是否可以提供书面说明？$/);
   if (missingQuestion) return `What is ${localizeReportText(missingQuestion[1])}? Can you provide it in writing?`;
   if (text.startsWith('岗位涉及')) return `The posting mentions "${text.slice(4)}".`;
+  const explicitLoanEvidence = text.match(/^岗位文本明确提到(.+)，需要求职者承担相关费用。$/);
+  if (explicitLoanEvidence) return `The posting explicitly mentions ${localizeReportText(explicitLoanEvidence[1])} and requires the candidate to bear related costs.`;
+  const documentRetentionEvidence = text.match(/^岗位文本明确提到(.+)，存在证件原件被留存的风险。$/);
+  if (documentRetentionEvidence) return `The posting explicitly mentions ${localizeReportText(documentRetentionEvidence[1])}, indicating that original identity or qualification documents may be retained.`;
+  const upfrontFeeEvidence = text.match(/^岗位文本明确提到(.+)，入职前需要核实收费依据。$/);
+  if (upfrontFeeEvidence) return `The posting explicitly mentions ${localizeReportText(upfrontFeeEvidence[1])}; verify the basis for any charge before accepting the role.`;
+  const verificationEvidence = text.match(/^岗位文本明确提到(.+)，需要在接受岗位前核实具体安排。$/);
+  if (verificationEvidence) return `The posting explicitly mentions ${localizeReportText(verificationEvidence[1])}; verify the exact arrangement before accepting the role.`;
   if (text.startsWith('岗位包含') && text.endsWith('等销售职责')) {
     return `The role includes sales duties such as ${text.slice(4, -5)}.`;
   }

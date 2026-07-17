@@ -1,4 +1,5 @@
 import '../../config/env';
+import { randomBytes } from 'node:crypto';
 import type { RiskReport, HrAnalysis, LlmProviderResult } from '../../types';
 import { SiliconFlowProvider } from './siliconflow';
 import { QwenCloudProvider } from './qwencloud';
@@ -24,9 +25,11 @@ interface LlmProvider {
 
 const STRONG_RISK_WORDS = [
   '押金', '保证金', '培训贷', '贷款分期', '扣身份证', '扣毕业证', '先交费', '拉亲友资源', '无薪试岗',
+  'training loan', 'loan installments', 'upfront fee', 'security deposit',
+  'retain passport', 'hold passport', 'retain diploma', 'unpaid trial', 'recruit friends and family',
 ];
-const MANAGEMENT_WRAPPER_WORDS = ['储备主管', '储备管理', '管理培训生', '管理岗', '储备干部'];
-const SALES_DUTY_WORDS = ['市场实践', '业绩跟进', '客户开发', '拓展客户', '拉新', '陌拜', '地推'];
+const MANAGEMENT_WRAPPER_WORDS = ['储备主管', '储备管理', '管理培训生', '管理岗', '储备干部', 'management trainee', 'management associate'];
+const SALES_DUTY_WORDS = ['市场实践', '业绩跟进', '客户开发', '拓展客户', '拉新', '陌拜', '地推', 'field marketing', 'client acquisition', 'lead generation', 'performance targets'];
 const PENSION_BUSINESS_WORDS = ['养老事业部', '养老业务部', '保险事业部', '金融事业部'];
 
 const SENSITIVE_EXPRESSIONS: Record<string, string> = {
@@ -44,6 +47,10 @@ const SENSITIVE_EXPRESSIONS: Record<string, string> = {
   '洗脑': '培训方式存疑',
   'PUA': '培训方式存疑',
 };
+
+function randomId(prefix: 'rep' | 'hra'): string {
+  return `${prefix}_${randomBytes(6).toString('hex')}`;
+}
 
 function filterSensitiveExpressions(text: string): string {
   let result = text;
@@ -75,7 +82,8 @@ function convertMissingToQuestions(missingInfo: string[]): string[] {
 }
 
 function checkStrongRiskWords(text: string): { found: boolean; words: string[] } {
-  const foundWords = STRONG_RISK_WORDS.filter(word => text.includes(word));
+  const normalized = text.toLowerCase();
+  const foundWords = STRONG_RISK_WORDS.filter(word => normalized.includes(word));
   return { found: foundWords.length > 0, words: foundWords };
 }
 
@@ -92,33 +100,38 @@ function applyStrongRiskCorrection(report: RiskReport, jdText: string, hrChatTex
   let adjustment = report.strong_risk_adjustment;
   const newEvidence = [...report.evidence];
   const riskTypes = [...report.risk_types];
-  const hasLoan = words.some(word => word === '培训贷' || word === '贷款分期');
-  const hasDocumentRetention = words.some(word => word === '扣身份证' || word === '扣毕业证');
-  const hasUpfrontFee = words.some(word => word === '押金' || word === '保证金' || word === '先交费');
-  const hasUnpaidTrial = words.includes('无薪试岗');
-  const hasNetworkRecruiting = words.includes('拉亲友资源');
+  const loanWords = ['培训贷', '贷款分期', 'training loan', 'loan installments'];
+  const documentWords = ['扣身份证', '扣毕业证', 'retain passport', 'hold passport', 'retain diploma'];
+  const feeWords = ['押金', '保证金', '先交费', 'upfront fee', 'security deposit'];
+  const hasLoan = words.some(word => loanWords.includes(word));
+  const hasDocumentRetention = words.some(word => documentWords.includes(word));
+  const hasUpfrontFee = words.some(word => feeWords.includes(word));
+  const hasUnpaidTrial = words.some(word => word === '无薪试岗' || word === 'unpaid trial');
+  const hasNetworkRecruiting = words.some(word => word === '拉亲友资源' || word === 'recruit friends and family');
 
   if (hasLoan) {
     adjustment = Math.max(adjustment, 20);
-    newEvidence.push(`岗位涉及${words.find(word => word === '培训贷' || word === '贷款分期')}`);
+    newEvidence.push(`岗位文本明确提到${words.find(word => loanWords.includes(word))}，需要求职者承担相关费用。`);
     riskTypes.push('涉及贷款');
   } else if (hasDocumentRetention) {
     adjustment = Math.max(adjustment, 20);
-    newEvidence.push(`岗位涉及${words.find(word => word === '扣身份证' || word === '扣毕业证')}`);
+    newEvidence.push(`岗位文本明确提到${words.find(word => documentWords.includes(word))}，存在证件原件被留存的风险。`);
     riskTypes.push('扣留证件风险');
   } else if (hasUpfrontFee) {
     adjustment = Math.max(adjustment, 20);
-    newEvidence.push(`岗位涉及${words.find(word => word === '押金' || word === '保证金' || word === '先交费')}`);
+    newEvidence.push(`岗位文本明确提到${words.find(word => feeWords.includes(word))}，入职前需要核实收费依据。`);
     riskTypes.push('涉及收费');
   } else if (hasUnpaidTrial || hasNetworkRecruiting) {
     adjustment = Math.max(adjustment, 15);
-    newEvidence.push(`岗位涉及${words[0]}`);
+    newEvidence.push(`岗位文本明确提到${words[0]}，需要在接受岗位前核实具体安排。`);
     riskTypes.push(hasUnpaidTrial ? '无薪试岗' : '拉亲友资源');
   }
 
   let newScore = Math.min(report.overall_score + adjustment, 100);
   if (hasLoan || hasDocumentRetention) newScore = Math.max(newScore, 81);
   else if (hasUpfrontFee) newScore = Math.max(newScore, 80);
+  else if (hasUnpaidTrial) newScore = Math.max(newScore, 75);
+  else if (hasNetworkRecruiting) newScore = Math.max(newScore, 70);
   
   return {
     ...report,
@@ -145,7 +158,16 @@ function applyEvidenceValidation(report: RiskReport): RiskReport {
 }
 
 function applyAntiMisjudgmentRules(report: RiskReport, jdText: string, hrChatText?: string): RiskReport {
-  if (jdText.includes('销售') && jdText.includes('底薪') && jdText.includes('提成')) {
+  const normalizedJd = jdText.toLowerCase();
+  const normalizedHr = (hrChatText || '').toLowerCase();
+  const hasTransparentSalesTerms = (
+    jdText.includes('销售') && jdText.includes('底薪') && jdText.includes('提成')
+  ) || (
+    /sales representative|account executive/.test(normalizedJd)
+    && /fixed base salary/.test(normalizedJd)
+    && /commission/.test(normalizedJd)
+  );
+  if (hasTransparentSalesTerms) {
     if (report.risk_types.includes('管理岗包装销售岗')) {
       const newRiskTypes = report.risk_types.filter(t => t !== '管理岗包装销售岗');
       if (report.overall_score > 50) {
@@ -160,10 +182,10 @@ function applyAntiMisjudgmentRules(report: RiskReport, jdText: string, hrChatTex
     }
   }
   
-  const hasManagementTitle = MANAGEMENT_WRAPPER_WORDS.some(word => jdText.includes(word));
-  const hasExplicitSalesTitle = /销售|客户经理|业务员/.test(jdText);
-  const salesDutyWords = SALES_DUTY_WORDS.filter(word => jdText.includes(word));
-  const hrAvoidsKeyQuestions = /具体到公司|面试时说明|到公司详细|不便透露/.test(hrChatText || '');
+  const hasManagementTitle = MANAGEMENT_WRAPPER_WORDS.some(word => normalizedJd.includes(word));
+  const hasExplicitSalesTitle = /销售|客户经理|业务员|sales representative|account executive/.test(normalizedJd);
+  const salesDutyWords = SALES_DUTY_WORDS.filter(word => normalizedJd.includes(word));
+  const hrAvoidsKeyQuestions = /具体到公司|面试时说明|到公司详细|不便透露|at the interview|cannot be disclosed|discussed later/.test(normalizedHr);
   if (hasManagementTitle && !hasExplicitSalesTitle && salesDutyWords.length >= 2) {
     const score = Math.max(report.overall_score, hrAvoidsKeyQuestions ? 70 : 65);
     return {
@@ -273,8 +295,8 @@ class RuleBasedProvider implements LlmProvider {
       ];
       predictedRole = '销售/客户开发岗';
       missingInfo.push('是否有个人销售指标');
-    } else if (jd.includes('销售')) {
-      if (jd.includes('底薪') && jd.includes('提成')) {
+    } else if (jd.includes('销售') || /sales representative|account executive/.test(jd)) {
+      if ((jd.includes('底薪') && jd.includes('提成')) || (jd.includes('fixed base salary') && jd.includes('commission'))) {
         score = 25;
         riskTypes = [];
         evidence = [];
@@ -300,7 +322,7 @@ class RuleBasedProvider implements LlmProvider {
     }
     
     const report: RiskReport = {
-      report_id: `rep_${Math.random().toString(36).slice(2, 14)}`,
+      report_id: randomId('rep'),
       overall_score: score,
       risk_level: calculateRiskLevel(score),
       confidence: '中',
@@ -372,7 +394,7 @@ class RuleBasedProvider implements LlmProvider {
     }
     
     const hrAnalysis: HrAnalysis = {
-      hr_analysis_id: `hra_${Math.random().toString(36).slice(2, 14)}`,
+      hr_analysis_id: randomId('hra'),
       report_id: input.report_id,
       avoidance_score: avoidanceScore,
       risk_level: riskLevel,

@@ -151,6 +151,8 @@ export function HomePage() {
         void refreshQuota();
       } else if (err instanceof ApiRequestError && err.code === 'AI_BUSY') {
         setError(isEnglish ? 'AI is busy. Try again in 10 seconds.' : '当前使用人数较多，请 10 秒后重试。');
+      } else if (err instanceof ApiRequestError && err.code === 'NETWORK_ERROR') {
+        setError(isEnglish ? 'Unable to reach the analysis service. Check your connection and try again.' : '暂时无法连接分析服务，请检查网络后重试。');
       } else if (err instanceof ApiRequestError && err.code === 'NO_JOB_INFORMATION') {
         setError(isEnglish
           ? 'No usable recruitment information was found. Upload a screenshot that includes role responsibilities or requirements.'
@@ -224,6 +226,8 @@ export function HomePage() {
         setError('验证已失效，请重新完成验证。');
       } else if (err instanceof ApiRequestError && err.code === 'AI_BUSY') {
         setError(isEnglish ? 'AI is busy. Try again in 10 seconds.' : '当前使用人数较多，请 10 秒后重试。');
+      } else if (err instanceof ApiRequestError && err.code === 'NETWORK_ERROR') {
+        setError(isEnglish ? 'Unable to reach the analysis service. Check your connection and try again.' : '暂时无法连接分析服务，请检查网络后重试。');
       } else {
         setError(err instanceof Error ? err.message : '检测失败，请稍后重试');
       }

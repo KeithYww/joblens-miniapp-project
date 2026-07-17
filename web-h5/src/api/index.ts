@@ -95,14 +95,17 @@ async function fetchApi<T>(
       headers,
       signal: controller?.signal ?? options.signal,
     });
-  } catch (error) {
+  } catch {
     if (timedOut) {
       throw new ApiRequestError({
         error: 'CLIENT_TIMEOUT',
         message: '请求超时，请重试或手动填写。',
       });
     }
-    throw error;
+    throw new ApiRequestError({
+      error: 'NETWORK_ERROR',
+      message: '暂时无法连接服务，请检查网络后重试。',
+    });
   } finally {
     if (timeoutId !== undefined) window.clearTimeout(timeoutId);
   }
