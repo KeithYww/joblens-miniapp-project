@@ -63,8 +63,11 @@ jobs:
           cache: npm
           cache-dependency-path: web-h5/package-lock.json
       - run: npm ci
+      - run: npm test
       - run: npm run build
       - run: npm run lint
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
       - run: npm audit --omit=dev
 
   deployment-package:

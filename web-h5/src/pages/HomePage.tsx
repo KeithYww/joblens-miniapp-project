@@ -4,9 +4,58 @@ import { ArrowRight, ShieldCheck, FileText, MessageSquare, ImageUp, X, CheckCirc
 import { TextInputPanel } from '@/components';
 import { TurnstileChallenge } from '@/components/TurnstileChallenge';
 import { api, ApiRequestError } from '@/api';
-import type { AiQuotaSnapshot, DetectRequest } from '@/types';
+import type {
+  AiQuotaSnapshot,
+  DetectRequest,
+  ScreenshotAsset,
+  ScreenshotExtractResult,
+  ScreenshotMime,
+} from '@/types';
 import { LanguageSwitcher, useI18n } from '@/i18n';
 import { detectSensitiveData, type SensitiveDataType } from '@/utils/inputPrivacy';
+
+type OcrUploadMode = 'json-v1' | 'multipart-v2';
+const SCREENSHOT_MIME_TYPES: ScreenshotMime[] = ['image/png', 'image/jpeg', 'image/webp'];
+const MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024;
+
+function isClientCancelled(error: unknown): boolean {
+  return (error instanceof ApiRequestError && error.code === 'CLIENT_CANCELLED')
+    || (error instanceof DOMException && error.name === 'AbortError');
+}
+
+function createScreenshotId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function readFileAsDataUrl(file: File | Blob, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    const abort = () => reader.abort();
+    const cleanup = () => signal.removeEventListener('abort', abort);
+
+    reader.onload = () => {
+      cleanup();
+      resolve(String(reader.result));
+    };
+    reader.onerror = () => {
+      cleanup();
+      reject(reader.error ?? new Error('read failed'));
+    };
+    reader.onabort = () => {
+      cleanup();
+      reject(new DOMException('The operation was cancelled.', 'AbortError'));
+    };
+
+    if (signal.aborted) {
+      reject(new DOMException('The operation was cancelled.', 'AbortError'));
+      return;
+    }
+    signal.addEventListener('abort', abort, { once: true });
+    reader.readAsDataURL(file);
+  });
+}
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -24,7 +73,7 @@ export function HomePage() {
   const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
   const [captchaAction, setCaptchaAction] = useState<'ocr' | 'analysis'>('analysis');
   const [rateLimitNotice, setRateLimitNotice] = useState<{ message: string; retryAfter?: string } | null>(null);
-  const [screenshots, setScreenshots] = useState<Array<{ name: string; dataUrl: string }>>([]);
+  const [screenshots, setScreenshots] = useState<ScreenshotAsset[]>([]);
   const [screenshotsRevision, setScreenshotsRevision] = useState(0);
   const [lastExtractedRevision, setLastExtractedRevision] = useState(-1);
   const [isExtracting, setIsExtracting] = useState(false);
@@ -35,6 +84,12 @@ export function HomePage() {
   const [isAnalysisHighlighted, setIsAnalysisHighlighted] = useState(false);
   const navigationNoticeTimer = useRef<number | null>(null);
   const analysisHighlightTimer = useRef<number | null>(null);
+  const completionTimer = useRef<number | null>(null);
+  const focusTimer = useRef<number | null>(null);
+  const quotaController = useRef<AbortController | null>(null);
+  const ocrController = useRef<AbortController | null>(null);
+  const reportController = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
 
   const jdSensitiveTypes = useMemo(() => detectSensitiveData(jdText), [jdText]);
   const hrSensitiveTypes = useMemo(() => detectSensitiveData(hrChatText), [hrChatText]);
@@ -53,10 +108,16 @@ export function HomePage() {
   }, [isEnglish]);
 
   const refreshQuota = useCallback(async () => {
+    quotaController.current?.abort();
+    const controller = new AbortController();
+    quotaController.current = controller;
     try {
-      setQuota(await api.quota.get());
-    } catch {
-      setQuota(null);
+      const nextQuota = await api.quota.get({ signal: controller.signal });
+      if (mounted.current && quotaController.current === controller) setQuota(nextQuota);
+    } catch (err) {
+      if (mounted.current && quotaController.current === controller && !isClientCancelled(err)) setQuota(null);
+    } finally {
+      if (quotaController.current === controller) quotaController.current = null;
     }
   }, []);
 
@@ -64,9 +125,18 @@ export function HomePage() {
     void refreshQuota();
   }, [refreshQuota]);
 
-  useEffect(() => () => {
-    if (navigationNoticeTimer.current) window.clearTimeout(navigationNoticeTimer.current);
-    if (analysisHighlightTimer.current) window.clearTimeout(analysisHighlightTimer.current);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      quotaController.current?.abort();
+      ocrController.current?.abort();
+      reportController.current?.abort();
+      if (navigationNoticeTimer.current) window.clearTimeout(navigationNoticeTimer.current);
+      if (analysisHighlightTimer.current) window.clearTimeout(analysisHighlightTimer.current);
+      if (completionTimer.current) window.clearTimeout(completionTimer.current);
+      if (focusTimer.current) window.clearTimeout(focusTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -81,43 +151,94 @@ export function HomePage() {
     return () => window.clearInterval(timer);
   }, [isExtracting]);
 
-  const handleScreenshotSelection = useCallback(async (files: FileList | null) => {
+  const cancelOcr = useCallback(() => {
+    ocrController.current?.abort();
+    if (completionTimer.current) {
+      window.clearTimeout(completionTimer.current);
+      completionTimer.current = null;
+    }
+  }, []);
+
+  const handleScreenshotSelection = useCallback((files: FileList | null) => {
     if (!files) return;
     const selected = Array.from(files);
     if (selected.length + screenshots.length > 3) {
       setError(isEnglish ? 'You can upload up to 3 screenshots.' : '最多上传 3 张截图。');
       return;
     }
-    if (selected.some(file => !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 2 * 1024 * 1024)) {
+    if (selected.some(file => !SCREENSHOT_MIME_TYPES.includes(file.type as ScreenshotMime) || file.size > MAX_SCREENSHOT_BYTES)) {
       setError(isEnglish ? 'Use PNG, JPEG, or WebP screenshots smaller than 2MB each.' : '请上传单张不超过 2MB 的 PNG、JPEG 或 WebP 截图。');
       return;
     }
-    const encoded = await Promise.all(selected.map(file => new Promise<{ name: string; dataUrl: string }>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve({ name: file.name, dataUrl: String(reader.result) });
-      reader.onerror = () => reject(new Error('read failed'));
-      reader.readAsDataURL(file);
-    })));
-    setScreenshots(current => [...current, ...encoded]);
+    cancelOcr();
+    const assets: ScreenshotAsset[] = selected.map(file => ({
+      id: createScreenshotId(),
+      file,
+      name: file.name,
+      mime: file.type as ScreenshotMime,
+      originalBytes: file.size,
+      uploadBytes: file.size,
+    }));
+    setScreenshots(current => [...current, ...assets]);
     setScreenshotsRevision(current => current + 1);
     setExtractStatus('');
     setError('');
-  }, [screenshots.length, isEnglish]);
+  }, [screenshots.length, isEnglish, cancelOcr]);
 
   const handleExtractScreenshots = useCallback(async (captchaOverride?: string) => {
     if (screenshots.length === 0) return;
+    cancelOcr();
+    const controller = new AbortController();
+    ocrController.current = controller;
     setIsExtracting(true);
     setExtractProgress(12);
     setError('');
     setExtractStatus('');
     try {
-      const result = await api.ocr.extractJob({
-        images: screenshots.map(item => item.dataUrl),
+      let uploadMode: OcrUploadMode = 'json-v1';
+      try {
+        const capabilities = await api.capabilities.get({ signal: controller.signal });
+        uploadMode = capabilities.preferred_ocr_upload_mode;
+      } catch (err) {
+        if (isClientCancelled(err)) throw err;
+      }
+
+      const requestBase = {
         language: locale,
         captcha_token: captchaOverride || captchaToken || undefined,
-      });
+      };
+      let result: ScreenshotExtractResult;
+      if (uploadMode === 'multipart-v2') {
+        result = await api.ocr.extractJobV2({
+          ...requestBase,
+          images: screenshots.map(item => item.file instanceof File
+            ? item.file
+            : new File([item.file], item.name, { type: item.mime })),
+        }, { signal: controller.signal });
+      } else {
+        const images: string[] = [];
+        for (const screenshot of screenshots) {
+          images.push(await readFileAsDataUrl(screenshot.file, controller.signal));
+        }
+        result = await api.ocr.extractJob({ ...requestBase, images }, { signal: controller.signal });
+      }
+
+      if (!mounted.current || ocrController.current !== controller) return;
       setExtractProgress(100);
-      await new Promise(resolve => window.setTimeout(resolve, 250));
+      await new Promise<void>((resolve, reject) => {
+        const cancelDelay = () => {
+          if (completionTimer.current) window.clearTimeout(completionTimer.current);
+          completionTimer.current = null;
+          reject(new DOMException('The operation was cancelled.', 'AbortError'));
+        };
+        controller.signal.addEventListener('abort', cancelDelay, { once: true });
+        completionTimer.current = window.setTimeout(() => {
+          completionTimer.current = null;
+          controller.signal.removeEventListener('abort', cancelDelay);
+          resolve();
+        }, 250);
+      });
+      if (!mounted.current || ocrController.current !== controller) return;
       setJdText(result.jd_text);
       if (!companyName && result.company_name) setCompanyName(result.company_name);
       if (!jobTitle && result.job_title) setJobTitle(result.job_title);
@@ -127,6 +248,7 @@ export function HomePage() {
       setExtractStatus(isEnglish ? 'Text extracted. Review and edit the fields below before analyzing.' : '已提取岗位信息，请在下方确认和编辑后再开始检测。');
       void refreshQuota();
     } catch (err) {
+      if (!mounted.current || ocrController.current !== controller || isClientCancelled(err)) return;
       setExtractProgress(0);
       if (err instanceof ApiRequestError && err.code === 'RATE_LIMITED') {
         setRateLimitNotice({ message: err.message, retryAfter: err.retryAfter });
@@ -161,9 +283,12 @@ export function HomePage() {
         setError(err instanceof Error ? err.message : (isEnglish ? 'Screenshot extraction failed. Please try again later.' : '截图识别失败，请稍后重试。'));
       }
     } finally {
-      setIsExtracting(false);
+      if (mounted.current && ocrController.current === controller) {
+        ocrController.current = null;
+        setIsExtracting(false);
+      }
     }
-  }, [screenshots, screenshotsRevision, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish, captchaToken, refreshQuota]);
+  }, [screenshots, screenshotsRevision, locale, companyName, jobTitle, sourcePlatform, hrChatText, isEnglish, captchaToken, refreshQuota, cancelOcr]);
 
   const extractProgressLabel = extractProgress < 45
     ? (isEnglish ? 'Preparing screenshots...' : '正在准备截图...')
@@ -195,6 +320,9 @@ export function HomePage() {
     }
 
     setError('');
+    reportController.current?.abort();
+    const controller = new AbortController();
+    reportController.current = controller;
     setIsLoading(true);
 
     const data: DetectRequest = {
@@ -208,10 +336,12 @@ export function HomePage() {
     };
 
     try {
-      const report = await api.reports.detect(data);
+      const report = await api.reports.detect(data, { signal: controller.signal });
+      if (!mounted.current || reportController.current !== controller) return;
       localStorage.setItem('latest_report_id', report.report_id);
       navigate(`/report/${report.report_id}`);
     } catch (err: unknown) {
+      if (!mounted.current || reportController.current !== controller || isClientCancelled(err)) return;
       if (err instanceof ApiRequestError && err.code === 'RATE_LIMITED') {
         setRateLimitNotice({ message: err.message, retryAfter: err.retryAfter });
       } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
@@ -232,7 +362,10 @@ export function HomePage() {
         setError(err instanceof Error ? err.message : '检测失败，请稍后重试');
       }
     } finally {
-      setIsLoading(false);
+      if (mounted.current && reportController.current === controller) {
+        reportController.current = null;
+        setIsLoading(false);
+      }
     }
   }, [sourcePlatform, companyName, jobTitle, jdText, hrChatText, captchaToken, locale, navigate, isEnglish, exceedsTextLimit, hasSensitiveData]);
 
@@ -262,7 +395,11 @@ export function HomePage() {
     document.getElementById('job-analysis-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setIsAnalysisHighlighted(true);
     announceNavigation(message);
-    window.setTimeout(() => document.getElementById('job-description-input')?.focus({ preventScroll: true }), 450);
+    if (focusTimer.current) window.clearTimeout(focusTimer.current);
+    focusTimer.current = window.setTimeout(() => {
+      focusTimer.current = null;
+      document.getElementById('job-description-input')?.focus({ preventScroll: true });
+    }, 450);
     if (analysisHighlightTimer.current) window.clearTimeout(analysisHighlightTimer.current);
     analysisHighlightTimer.current = window.setTimeout(() => setIsAnalysisHighlighted(false), 1800);
   }, [announceNavigation]);
@@ -344,7 +481,8 @@ export function HomePage() {
                         : (isEnglish ? 'Extract text' : '识别截图')}
                   </button>}
                 </div>
-                {screenshots.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{screenshots.map((item, index) => <div key={`${item.name}-${index}`} className="flex max-w-full items-center gap-1 rounded-md bg-white px-2 py-1 text-xs text-gray-700 border border-gray-200"><span className="max-w-40 truncate">{item.name}</span><button type="button" aria-label={isEnglish ? `Remove ${item.name}` : `移除 ${item.name}`} onClick={() => {
+                {screenshots.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{screenshots.map((item, index) => <div key={item.id} className="flex max-w-full items-center gap-1 rounded-md bg-white px-2 py-1 text-xs text-gray-700 border border-gray-200"><span className="max-w-40 truncate">{item.name}</span><button type="button" aria-label={isEnglish ? `Remove ${item.name}` : `移除 ${item.name}`} onClick={() => {
+                  cancelOcr();
                   setScreenshots(current => current.filter((_, itemIndex) => itemIndex !== index));
                   setScreenshotsRevision(current => current + 1);
                   setExtractStatus('');

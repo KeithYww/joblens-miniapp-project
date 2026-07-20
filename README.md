@@ -189,6 +189,7 @@ QWENCLOUD_API_KEY=your-api-key
    - 已有旧版手工建表的数据库，先按 [部署指南](docs/26-deployment-guide.md) 完成 migration baseline
    - 必填环境变量：`DATABASE_URL`, `REDIS_URL`, `TURNSTILE_SECRET_KEY`, `AI_PROVIDER`
    - 生产保护：`REQUIRE_DATABASE=true`, `REQUIRE_REDIS=true`, `TRUST_PROXY=1`
+   - OCR 上传优化：`OCR_UPLOAD_MODE=multipart-v2`；异常时可临时改为 `json-v1` 回滚
    - 按 Provider 添加：`SILICONFLOW_API_KEY` 或 `QWENCLOUD_API_KEY`
    - 添加 `CORS_ORIGIN=https://your-vercel-project.vercel.app`，多个前端域名使用逗号分隔
 

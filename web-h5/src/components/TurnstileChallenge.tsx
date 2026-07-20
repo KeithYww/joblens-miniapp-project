@@ -80,13 +80,20 @@ export function TurnstileChallenge({
 
   useEffect(() => {
     if (!scriptReady || !siteKey || !containerRef.current || !window.turnstile) return;
+    let active = true;
 
     try {
       widgetIdRef.current = window.turnstile.render(containerRef.current, {
         sitekey: siteKey,
-        callback: (token: string) => onVerifyRef.current(token),
-        'expired-callback': () => onVerifyRef.current(''),
-        'error-callback': (code: string) => onErrorRef.current?.(code || 'widget-error'),
+        callback: (token: string) => {
+          if (active) onVerifyRef.current(token);
+        },
+        'expired-callback': () => {
+          if (active) onVerifyRef.current('');
+        },
+        'error-callback': (code: string) => {
+          if (active) onErrorRef.current?.(code || 'widget-error');
+        },
         'refresh-expired': 'auto',
         retry: 'auto',
         theme: 'auto',
@@ -97,8 +104,11 @@ export function TurnstileChallenge({
     }
 
     return () => {
-      if (widgetIdRef.current && window.turnstile) {
-        window.turnstile.remove(widgetIdRef.current);
+      active = false;
+      const widgetId = widgetIdRef.current;
+      widgetIdRef.current = null;
+      if (widgetId !== null && window.turnstile) {
+        window.turnstile.remove(widgetId);
       }
     };
   }, [scriptReady, siteKey]);
@@ -106,7 +116,7 @@ export function TurnstileChallenge({
   useEffect(() => {
     if (previousResetSignal.current === resetSignal) return;
     previousResetSignal.current = resetSignal;
-    if (widgetIdRef.current && window.turnstile) {
+    if (widgetIdRef.current !== null && window.turnstile) {
       window.turnstile.reset(widgetIdRef.current);
       onVerifyRef.current('');
     }

@@ -10,7 +10,21 @@ import type {
   AiQuotaSnapshot,
   ApiError,
   ClientErrorReport,
+  ApiCapabilities,
+  ScreenshotExtractV2Request,
 } from '@/types';
+import {
+  ClientApiError,
+  requestJson,
+  type ClientApiErrorDetails,
+} from './request';
+
+export type { ApiErrorKind } from './request';
+
+export interface ApiRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
 
 const CUSTOM_API_URL_KEY = 'custom_api_base_url';
 
@@ -38,17 +52,23 @@ export function getStoredApiBaseUrl(): string {
   return localStorage.getItem(CUSTOM_API_URL_KEY) || '';
 }
 
-export class ApiRequestError extends Error {
-  readonly code: string;
+export class ApiRequestError extends ClientApiError {
   readonly captchaProvider?: string;
-  readonly retryAfter?: string;
 
-  constructor(error: ApiError) {
-    super(error.message || '请求失败');
+  constructor(error: ApiError | ClientApiErrorDetails) {
+    const structured = 'kind' in error
+      ? error
+      : {
+          kind: 'http' as const,
+          code: error.error,
+          message: error.message || '请求失败',
+          retryAfter: error.retry_after,
+          body: error,
+        };
+    super(structured);
     this.name = 'ApiRequestError';
-    this.code = error.error;
-    this.captchaProvider = error.captcha_provider;
-    this.retryAfter = error.retry_after;
+    const body = structured.body as Partial<ApiError> | undefined;
+    this.captchaProvider = body?.captcha_provider;
   }
 }
 
@@ -75,115 +95,92 @@ function getVisitorId(): string {
 async function fetchApi<T>(
   path: string,
   options: RequestInit = {},
-  timeoutMs?: number,
+  requestOptions: ApiRequestOptions = {},
 ): Promise<T> {
   const headers = new Headers(options.headers);
-  headers.set('Content-Type', 'application/json');
+  if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   headers.set('X-Visitor-Id', getVisitorId());
-
-  const controller = timeoutMs ? new AbortController() : undefined;
-  let timedOut = false;
-  const timeoutId = timeoutMs ? window.setTimeout(() => {
-    timedOut = true;
-    controller?.abort();
-  }, timeoutMs) : undefined;
-
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      ...options,
-      headers,
-      signal: controller?.signal ?? options.signal,
-    });
-  } catch {
-    if (timedOut) {
-      throw new ApiRequestError({
-        error: 'CLIENT_TIMEOUT',
-        message: '请求超时，请重试或手动填写。',
-      });
-    }
-    throw new ApiRequestError({
-      error: 'NETWORK_ERROR',
-      message: '暂时无法连接服务，请检查网络后重试。',
-    });
-  } finally {
-    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-  }
-
-  let data: T | ApiError;
-  try {
-    data = await response.json() as T | ApiError;
-  } catch {
-    throw new ApiRequestError({
-      error: 'INVALID_RESPONSE',
-      message: response.ok ? '服务响应格式异常。' : `服务暂时不可用（${response.status}）。`,
-    });
-  }
-
-  if (!response.ok) {
-    throw new ApiRequestError(data as ApiError);
-  }
-
-  return data as T;
+  const timeoutMs = requestOptions.timeoutMs
+    ?? (options.method && options.method !== 'GET' ? 30_000 : 15_000);
+  return requestJson<T>(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers,
+    signal: requestOptions.signal,
+    timeoutMs,
+  }, (details) => new ApiRequestError(details));
 }
 
 export const api = {
   monitoring: {
-    reportClientError: async (data: ClientErrorReport): Promise<void> => {
+    reportClientError: async (data: ClientErrorReport, options?: ApiRequestOptions): Promise<void> => {
       await fetchApi('/api/client-errors', {
         method: 'POST',
         body: JSON.stringify(data),
-      }, 5_000);
+      }, { ...options, timeoutMs: options?.timeoutMs ?? 5_000 });
     },
   },
   quota: {
-    get: async (): Promise<AiQuotaSnapshot> => fetchApi('/api/ai-quota'),
+    get: async (options?: ApiRequestOptions): Promise<AiQuotaSnapshot> => fetchApi('/api/ai-quota', {}, options),
+  },
+  capabilities: {
+    get: async (options?: ApiRequestOptions): Promise<ApiCapabilities> => fetchApi('/api/capabilities', {}, options),
   },
   ocr: {
-    extractJob: async (data: ScreenshotExtractRequest): Promise<ScreenshotExtractResult> => {
+    extractJob: async (data: ScreenshotExtractRequest, options?: ApiRequestOptions): Promise<ScreenshotExtractResult> => {
       return fetchApi('/api/ocr/extract-job', {
         method: 'POST',
         body: JSON.stringify(data),
-      }, 65_000);
+      }, { ...options, timeoutMs: options?.timeoutMs ?? 70_000 });
+    },
+    extractJobV2: async (data: ScreenshotExtractV2Request, options?: ApiRequestOptions): Promise<ScreenshotExtractResult> => {
+      const form = new FormData();
+      data.images.forEach((image) => form.append('images', image));
+      if (data.language) form.append('language', data.language);
+      if (data.captcha_token) form.append('captcha_token', data.captcha_token);
+      return fetchApi('/api/ocr/extract-job-v2', {
+        method: 'POST',
+        body: form,
+      }, { ...options, timeoutMs: options?.timeoutMs ?? 70_000 });
     },
   },
   reports: {
-    detect: async (data: DetectRequest): Promise<RiskReport> => {
+    detect: async (data: DetectRequest, options?: ApiRequestOptions): Promise<RiskReport> => {
       return fetchApi('/api/reports/detect', {
         method: 'POST',
         body: JSON.stringify(data),
-      });
+      }, { ...options, timeoutMs: options?.timeoutMs ?? 75_000 });
     },
-    get: async (id: string, language?: 'zh-CN' | 'en-US'): Promise<RiskReport> => {
+    get: async (id: string, language?: 'zh-CN' | 'en-US', options?: ApiRequestOptions): Promise<RiskReport> => {
       const query = language ? `?language=${encodeURIComponent(language)}` : '';
-      return fetchApi(`/api/reports/${id}${query}`);
+      return fetchApi(`/api/reports/${id}${query}`, {}, options);
     },
-    delete: async (id: string, captchaToken?: string): Promise<{ status: string; message: string; deleted_at: string }> => {
+    delete: async (id: string, captchaToken?: string, options?: ApiRequestOptions): Promise<{ status: string; message: string; deleted_at: string }> => {
       return fetchApi(`/api/reports/${id}`, {
         method: 'DELETE',
         body: JSON.stringify({ captcha_token: captchaToken || undefined }),
-      });
+      }, options);
     },
     hrAnalysis: async (
       reportId: string,
-      data: Omit<HrAnalysisRequest, 'report_id'>
+      data: Omit<HrAnalysisRequest, 'report_id'>,
+      options?: ApiRequestOptions,
     ): Promise<HrAnalysis> => {
       return fetchApi(`/api/reports/${reportId}/hr-analysis`, {
         method: 'POST',
         body: JSON.stringify({ ...data, report_id: reportId }),
-      });
+      }, options);
     },
   },
   hrAnalysis: {
-    analyze: async (data: HrAnalysisRequest): Promise<HrAnalysis> => {
+    analyze: async (data: HrAnalysisRequest, options?: ApiRequestOptions): Promise<HrAnalysis> => {
       return fetchApi('/api/hr-analysis', {
         method: 'POST',
         body: JSON.stringify(data),
-      });
+      }, options);
     },
   },
   feedbacks: {
-    interview: async (data: InterviewFeedbackRequest): Promise<{
+    interview: async (data: InterviewFeedbackRequest, options?: ApiRequestOptions): Promise<{
       feedback_id: string;
       status: string;
       message: string;
@@ -192,9 +189,9 @@ export const api = {
       return fetchApi('/api/interview-feedbacks', {
         method: 'POST',
         body: JSON.stringify(data),
-      });
+      }, options);
     },
-    report: async (data: ReportFeedbackRequest): Promise<{
+    report: async (data: ReportFeedbackRequest, options?: ApiRequestOptions): Promise<{
       feedback_id: string;
       status: string;
       message: string;
@@ -203,15 +200,15 @@ export const api = {
       return fetchApi('/api/report-feedbacks', {
         method: 'POST',
         body: JSON.stringify(data),
-      });
+      }, options);
     },
   },
   visitorData: {
-    deleteAll: async (captchaToken?: string): Promise<{ status: string; message: string; deleted_at: string }> => {
+    deleteAll: async (captchaToken?: string, options?: ApiRequestOptions): Promise<{ status: string; message: string; deleted_at: string }> => {
       return fetchApi('/api/visitor-data', {
         method: 'DELETE',
         body: JSON.stringify({ captcha_token: captchaToken || undefined }),
-      });
+      }, options);
     },
   },
 };

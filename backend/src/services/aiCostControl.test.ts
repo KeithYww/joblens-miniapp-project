@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getAiCostConfig, getShanghaiQuotaWindow } from './aiCostControl';
 import { calculateOcrCacheKey } from './screenshotCache';
+import { decodeV1Images, imageHashes } from './ocrInput';
 
 const ONE_PIXEL_PNG_A = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB';
 const ONE_PIXEL_PNG_B = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAAC';
@@ -46,16 +47,21 @@ test('AI cost control uses conservative P0 defaults', () => {
   }
 });
 
-test('OCR cache keys are visitor-independent and bind image order, language, and model', () => {
+test('OCR cache keys are visitor-scoped and bind decoded image order, language, and model', () => {
   const previousModel = process.env.SILICONFLOW_VISION_MODEL;
   process.env.SILICONFLOW_VISION_MODEL = 'vision-a';
   try {
-    const base = calculateOcrCacheKey([ONE_PIXEL_PNG_A, ONE_PIXEL_PNG_B], 'zh-CN');
-    assert.equal(base, calculateOcrCacheKey([ONE_PIXEL_PNG_A, ONE_PIXEL_PNG_B], 'zh-CN'));
-    assert.notEqual(base, calculateOcrCacheKey([ONE_PIXEL_PNG_B, ONE_PIXEL_PNG_A], 'zh-CN'));
-    assert.notEqual(base, calculateOcrCacheKey([ONE_PIXEL_PNG_A, ONE_PIXEL_PNG_B], 'en-US'));
+    const visitorA = 'visitor_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const visitorB = 'visitor_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const hashes = imageHashes(decodeV1Images([ONE_PIXEL_PNG_A, ONE_PIXEL_PNG_B]));
+    const reversed = imageHashes(decodeV1Images([ONE_PIXEL_PNG_B, ONE_PIXEL_PNG_A]));
+    const base = calculateOcrCacheKey(visitorA, hashes, 'zh-CN');
+    assert.equal(base, calculateOcrCacheKey(visitorA, hashes, 'zh-CN'));
+    assert.notEqual(base, calculateOcrCacheKey(visitorB, hashes, 'zh-CN'));
+    assert.notEqual(base, calculateOcrCacheKey(visitorA, reversed, 'zh-CN'));
+    assert.notEqual(base, calculateOcrCacheKey(visitorA, hashes, 'en-US'));
     process.env.SILICONFLOW_VISION_MODEL = 'vision-b';
-    assert.notEqual(base, calculateOcrCacheKey([ONE_PIXEL_PNG_A, ONE_PIXEL_PNG_B], 'zh-CN'));
+    assert.notEqual(base, calculateOcrCacheKey(visitorA, hashes, 'zh-CN'));
   } finally {
     if (previousModel === undefined) delete process.env.SILICONFLOW_VISION_MODEL;
     else process.env.SILICONFLOW_VISION_MODEL = previousModel;

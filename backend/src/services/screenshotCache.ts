@@ -5,7 +5,7 @@ import type { ScreenshotExtractResult } from '../types';
 import { containsHighSensitiveData } from '../schemas';
 import { getVisionModelName, OCR_PROMPT_VERSION } from './screenshotExtraction';
 
-const NAMESPACE = 'ocr-cache:v1';
+const NAMESPACE = 'ocr-cache:v2';
 const cachedExtractionSchema = z.object({
   result: z.object({
     jd_text: z.string().trim().min(1).max(8_000),
@@ -43,21 +43,45 @@ function boundedCacheTtl(): number {
   return Number.isInteger(value) && value >= 60 && value <= 604_800 ? value : 86_400;
 }
 
-function imageBytes(image: string): Buffer {
-  const separator = image.indexOf(',');
-  if (separator < 0) throw new Error('Invalid image data URL');
-  return Buffer.from(image.slice(separator + 1), 'base64');
+function cacheSecret(): string {
+  return process.env.OCR_CACHE_SECRET?.trim() || 'joblens-ocr-cache-v2';
 }
 
-export function calculateOcrCacheKey(images: string[], language: 'zh-CN' | 'en-US' = 'zh-CN'): string {
-  const imageHashes = images.map(image => crypto.createHash('sha256').update(imageBytes(image)).digest('hex'));
+export function calculateVisitorIdHash(visitorId: string): string {
+  return crypto.createHmac('sha256', cacheSecret()).update(visitorId).digest('hex');
+}
+
+export function calculateOcrCacheKey(
+  visitorId: string,
+  imageHashes: string[],
+  language: 'zh-CN' | 'en-US' = 'zh-CN',
+): string {
   const digest = crypto.createHash('sha256').update(JSON.stringify({
+    visitorIdHash: calculateVisitorIdHash(visitorId),
     imageHashes,
     language,
     model: getVisionModelName(),
     promptVersion: OCR_PROMPT_VERSION,
   })).digest('hex');
   return `${NAMESPACE}:${digest}`;
+}
+
+const singleflight = new Map<string, Promise<unknown>>();
+
+export async function runOcrSingleflight<T>(key: string, runLeader: () => Promise<T>): Promise<{
+  value: T;
+  leader: boolean;
+}> {
+  const existing = singleflight.get(key) as Promise<T> | undefined;
+  if (existing) return { value: await existing, leader: false };
+
+  const promise = runLeader();
+  singleflight.set(key, promise);
+  try {
+    return { value: await promise, leader: true };
+  } finally {
+    if (singleflight.get(key) === promise) singleflight.delete(key);
+  }
 }
 
 export async function getCachedScreenshotExtraction(key: string): Promise<CachedScreenshotExtraction | null> {

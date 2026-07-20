@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import multipart from '@fastify/multipart';
 import type {
   ApiError,
   HrAnalysis,
@@ -45,7 +46,27 @@ import {
   getCachedScreenshotExtraction,
   isScreenshotExtractionSafeToCache,
   setCachedScreenshotExtraction,
+  runOcrSingleflight,
 } from '../services/screenshotCache';
+import {
+  calculateOcrWriteHash,
+  decodeV1Images,
+  imageHashes,
+  MAX_FIELDS,
+  MAX_FIELD_BYTES,
+  MAX_FIELD_NAME_BYTES,
+  MAX_FILES,
+  MAX_FILE_BYTES,
+  MAX_HEADER_PAIRS,
+  MAX_MULTIPART_BODY_BYTES,
+  MAX_PARTS,
+  OCR_OPERATION_KEY,
+  OcrUploadError,
+  parseOcrMultipart,
+  toProviderDataUrl,
+  validateOcrImages,
+  type OcrInput,
+} from '../services/ocrInput';
 import { LlmConfigurationError } from '../services/llm/common';
 import { getOperationalMetrics, recordFrontendError } from '../services/operationalMetrics';
 import { registerAdminRoutes } from './admin';
@@ -539,12 +560,13 @@ async function enforceWriteProtection(params: {
   requestId: string;
   visitorId: string;
   apiPath: string;
+  operationKey?: string;
   captchaToken?: string;
   inputHash?: string;
 }): Promise<boolean> {
-  const { request, reply, requestId, visitorId, apiPath, captchaToken, inputHash } = params;
-  await incrementRateLimit(request.ip, visitorId, apiPath, inputHash);
-  const result = await checkRateLimit(request.ip, visitorId, apiPath, inputHash);
+  const { request, reply, requestId, visitorId, apiPath, operationKey = apiPath, captchaToken, inputHash } = params;
+  await incrementRateLimit(request.ip, visitorId, operationKey, inputHash);
+  const result = await checkRateLimit(request.ip, visitorId, operationKey, inputHash);
   if (result.blocked) {
     await logApiRequest({
       requestId, apiPath, method: request.method, visitorId, ip: request.ip,
@@ -612,7 +634,194 @@ async function rejectSensitiveData(params: {
   return true;
 }
 
+type ScreenshotExtraction = Awaited<ReturnType<typeof extractJobFromScreenshots>>;
+
+class OcrRequestError extends Error {
+  constructor(
+    readonly statusCode: number,
+    readonly code: string,
+    message: string,
+    readonly retryAfter?: string,
+    readonly remaining?: number,
+    readonly resetAt?: string,
+  ) {
+    super(message);
+    this.name = 'OcrRequestError';
+  }
+}
+
+async function runOcrPipeline(params: {
+  request: FastifyRequest;
+  reply: FastifyReply;
+  requestId: string;
+  visitorId: string;
+  apiPath: string;
+  input: OcrInput;
+}): Promise<void> {
+  const { request, reply, requestId, visitorId, apiPath, input } = params;
+  const hashes = imageHashes(input.images);
+  const language = input.language ?? 'zh-CN';
+  const writeHash = calculateOcrWriteHash(visitorId, hashes, language);
+  if (!await enforceWriteProtection({
+    request,
+    reply,
+    requestId,
+    visitorId,
+    apiPath,
+    operationKey: OCR_OPERATION_KEY,
+    captchaToken: input.captchaToken,
+    inputHash: writeHash,
+  })) return;
+
+  const cacheKey = calculateOcrCacheKey(visitorId, hashes, language);
+  const cached = await getCachedScreenshotExtraction(cacheKey);
+  if (cached) {
+    if (!isScreenshotExtractionSafeToCache(cached.result)) {
+      await deleteCachedScreenshotExtraction(cacheKey);
+      throw new OcrRequestError(400, 'SENSITIVE_DATA_DETECTED', '截图识别结果包含身份证号、银行卡号或完整手机号，请打码后重新上传。');
+    }
+    const quota = await getAiQuotaSnapshot(visitorId);
+    reply.headers({
+      'x-joblens-analysis-source': 'cache',
+      'x-joblens-ai-provider': cached.provider,
+      'x-joblens-ai-model': cached.model,
+    });
+    setQuotaHeaders(reply, quota.ocr.remaining, quota.resetAt);
+    await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: false, provider: cached.provider, model: cached.model });
+    await reply.send(cached.result);
+    return;
+  }
+
+  const flight = await runOcrSingleflight(cacheKey, async () => {
+    const quota = await reserveAiQuota({ visitorId, ip: request.ip, operation: 'ocr' });
+    if (!quota.allowed) {
+      const response = aiQuotaErrorResponse(quota.reason);
+      throw new OcrRequestError(
+        response.status,
+        quota.reason,
+        response.message,
+        new Date(Date.now() + quota.retryAfter * 1_000).toISOString(),
+        quota.remaining,
+        quota.resetAt,
+      );
+    }
+
+    const lease = await acquireAiConcurrency('ocr');
+    if (!lease) {
+      await refundAiQuota(quota.reservation);
+      throw new OcrRequestError(429, 'AI_BUSY', '当前使用人数较多，请 10 秒后重试。', new Date(Date.now() + 10_000).toISOString());
+    }
+
+    try {
+      let providerImages = input.images.map(toProviderDataUrl);
+      let extraction: ScreenshotExtraction;
+      try {
+        extraction = await extractJobFromScreenshots(providerImages, input.language);
+      } finally {
+        providerImages = [];
+      }
+      if (!isScreenshotExtractionSafeToCache(extraction.result)) {
+        throw new OcrRequestError(400, 'SENSITIVE_DATA_DETECTED', '截图识别结果包含身份证号、银行卡号或完整手机号，请打码后重新上传。');
+      }
+      await setCachedScreenshotExtraction(cacheKey, {
+        result: extraction.result,
+        model: extraction.model,
+        provider: extraction.provider,
+        createdAt: new Date().toISOString(),
+      });
+      return {
+        extraction,
+        remaining: quota.reservation.remaining,
+        resetAt: quota.reservation.resetAt,
+      };
+    } catch (error) {
+      if (error instanceof LlmConfigurationError) await refundAiQuota(quota.reservation);
+      throw error;
+    } finally {
+      await releaseAiConcurrency(lease);
+    }
+  });
+
+  const { extraction } = flight.value;
+  let remaining = flight.value.remaining;
+  let resetAt = flight.value.resetAt;
+  if (!flight.leader) {
+    const quota = await getAiQuotaSnapshot(visitorId);
+    remaining = quota.ocr.remaining;
+    resetAt = quota.resetAt;
+  }
+  reply.headers({
+    'x-joblens-analysis-source': flight.leader ? 'model' : 'cache',
+    'x-joblens-ai-provider': extraction.provider,
+    'x-joblens-ai-model': extraction.model,
+    'x-joblens-ai-latency-ms': String(extraction.latencyMs),
+  });
+  setQuotaHeaders(reply, remaining, resetAt);
+  await logApiRequest({
+    requestId,
+    apiPath,
+    method: 'POST',
+    visitorId,
+    ip: request.ip,
+    userAgent: request.headers['user-agent'],
+    httpStatus: 200,
+    aiCalled: flight.leader,
+    provider: extraction.provider,
+    model: extraction.model,
+    latencyMs: extraction.latencyMs,
+  });
+  await reply.send(extraction.result);
+}
+
+async function handleOcrFailure(params: {
+  error: unknown;
+  request: FastifyRequest;
+  reply: FastifyReply;
+  requestId: string;
+  visitorId: string;
+  apiPath: string;
+}): Promise<void> {
+  const { error, request, reply, requestId, visitorId, apiPath } = params;
+  if (error instanceof OcrUploadError) {
+    await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: error.statusCode, errorCode: error.code, errorMessage: error.code });
+    await reply.status(error.statusCode).send(buildErrorResponse(error.code, error.message));
+    return;
+  }
+  if (error instanceof OcrRequestError) {
+    if (error.remaining !== undefined && error.resetAt) setQuotaHeaders(reply, error.remaining, error.resetAt);
+    await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: error.statusCode, errorCode: error.code, errorMessage: error.code, rateLimited: error.statusCode === 429 });
+    await reply.status(error.statusCode).send(buildErrorResponse(error.code, error.message, undefined, undefined, error.retryAfter));
+    return;
+  }
+
+  const timedOut = error instanceof ScreenshotExtractionTimeoutError;
+  const noJobInformation = error instanceof ScreenshotNoJobInformationError;
+  const httpStatus = timedOut ? 504 : noJobInformation ? 422 : 502;
+  const errorCode = timedOut ? 'OCR_TIMEOUT' : noJobInformation ? 'NO_JOB_INFORMATION' : 'OCR_UNAVAILABLE';
+  const errorMessage = timedOut ? '截图识别超时' : noJobInformation ? '截图中未找到招聘信息' : '截图识别服务暂时不可用';
+  await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus, errorCode, errorMessage });
+  if (!noJobInformation) logInternalFailure(request, 'screenshot_extraction', error);
+  await reply.status(httpStatus).send(buildErrorResponse(errorCode, timedOut
+    ? '截图识别超时，请重试或手动填写。'
+    : noJobInformation
+      ? '截图中未识别到可用的招聘信息，请上传包含岗位职责或任职要求的截图。'
+      : '截图识别服务暂时不可用，请稍后重试或手动填写。'));
+}
+
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  await app.register(multipart, {
+    throwFileSizeLimit: true,
+    limits: {
+      files: MAX_FILES,
+      fileSize: MAX_FILE_BYTES,
+      fields: MAX_FIELDS,
+      parts: MAX_PARTS,
+      fieldNameSize: MAX_FIELD_NAME_BYTES,
+      fieldSize: MAX_FIELD_BYTES,
+      headerPairs: MAX_HEADER_PAIRS,
+    },
+  });
+
   app.addHook('preHandler', async (request, reply) => {
     if (request.method !== 'POST' && request.method !== 'DELETE') return;
     const production = process.env.NODE_ENV === 'production';
@@ -625,6 +834,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const pathname = request.url.split('?')[0];
     const aiRouteCanFailClosed = pathname === '/api/reports/detect'
       || pathname === '/api/ocr/extract-job'
+      || pathname === '/api/ocr/extract-job-v2'
       || pathname === '/api/hr-analysis'
       || /^\/api\/reports\/[^/]+\/hr-analysis$/.test(pathname);
     if ((databaseRequired && !isDbAvailable()) || (redisRequired && !isRedisAvailable() && !aiRouteCanFailClosed)) {
@@ -843,7 +1053,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.post('/api/ocr/extract-job', async (request, reply) => {
+  app.get('/api/capabilities', async (_request, reply) => {
+    const configured = process.env.OCR_UPLOAD_MODE?.trim();
+    const preferredMode = configured === 'multipart-v2' ? 'multipart-v2' : 'json-v1';
+    reply.header('cache-control', 'no-store');
+    return reply.send({ preferred_ocr_upload_mode: preferredMode });
+  });
+
+  app.post('/api/ocr/extract-job', { bodyLimit: 8_500_000 }, async (request, reply) => {
     const visitorId = requireVisitorId(request, reply);
     if (!visitorId) return;
     const requestId = generateId('req');
@@ -853,109 +1070,42 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: 400, errorCode: 'VALIDATION_ERROR', errorMessage: '截图参数格式错误' });
       return reply.status(400).send(buildErrorResponse('VALIDATION_ERROR', '截图参数格式错误', parsed.error.errors.map(error => ({ field: error.path.join('.'), issue: error.message }))));
     }
-    const inputHash = calculateWriteHash(visitorId, apiPath, { image_hashes: parsed.data.images.map(image => crypto.createHash('sha256').update(image).digest('hex')) });
-    if (!await enforceWriteProtection({ request, reply, requestId, visitorId, apiPath, captchaToken: parsed.data.captcha_token, inputHash })) return;
-
-    const cacheKey = calculateOcrCacheKey(parsed.data.images, parsed.data.language);
-    const cached = await getCachedScreenshotExtraction(cacheKey);
-    if (cached) {
-      if (!isScreenshotExtractionSafeToCache(cached.result)) {
-        await deleteCachedScreenshotExtraction(cacheKey);
-        return reply.status(400).send(buildErrorResponse(
-          'SENSITIVE_DATA_DETECTED',
-          '截图识别结果包含身份证号、银行卡号或完整手机号，请打码后重新上传。'
-        ));
-      }
-      const quota = await getAiQuotaSnapshot(visitorId);
-      reply.headers({
-        'x-joblens-analysis-source': 'cache',
-        'x-joblens-ai-provider': cached.provider,
-        'x-joblens-ai-model': cached.model,
-      });
-      setQuotaHeaders(reply, quota.ocr.remaining, quota.resetAt);
-      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: false, provider: cached.provider, model: cached.model });
-      return reply.send(cached.result);
-    }
-
-    const quota = await reserveAiQuota({ visitorId, ip: request.ip, operation: 'ocr' });
-    if (!quota.allowed) {
-      const response = aiQuotaErrorResponse(quota.reason);
-      setQuotaHeaders(reply, quota.remaining, quota.resetAt);
-      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus: response.status, errorCode: quota.reason, errorMessage: response.message, rateLimited: response.status === 429 });
-      return reply.status(response.status).send(buildErrorResponse(
-        quota.reason,
-        response.message,
-        undefined,
-        undefined,
-        new Date(Date.now() + quota.retryAfter * 1_000).toISOString(),
-      ));
-    }
-
-    const lease = await acquireAiConcurrency('ocr');
-    if (!lease) {
-      await refundAiQuota(quota.reservation);
-      return reply.status(429).send(buildErrorResponse(
-        'AI_BUSY',
-        '当前使用人数较多，请 10 秒后重试。',
-        undefined,
-        undefined,
-        new Date(Date.now() + 10_000).toISOString(),
-      ));
-    }
-
     try {
-      const extraction = await extractJobFromScreenshots(parsed.data.images, parsed.data.language);
-      if (!isScreenshotExtractionSafeToCache(extraction.result)) {
-        await logApiRequest({
-          requestId,
-          apiPath,
-          method: 'POST',
-          visitorId,
-          ip: request.ip,
-          httpStatus: 400,
-          errorCode: 'SENSITIVE_DATA_DETECTED',
-          errorMessage: 'OCR 结果包含高敏个人标识',
-          aiCalled: true,
-          provider: extraction.provider,
-          model: extraction.model,
-          latencyMs: extraction.latencyMs,
-        });
-        return reply.status(400).send(buildErrorResponse(
-          'SENSITIVE_DATA_DETECTED',
-          '截图识别结果包含身份证号、银行卡号或完整手机号，请打码后重新上传。'
-        ));
-      }
-      await setCachedScreenshotExtraction(cacheKey, {
-        result: extraction.result,
-        model: extraction.model,
-        provider: extraction.provider,
-        createdAt: new Date().toISOString(),
+      const images = decodeV1Images(parsed.data.images);
+      await validateOcrImages(images);
+      await runOcrPipeline({
+        request,
+        reply,
+        requestId,
+        visitorId,
+        apiPath,
+        input: {
+          images,
+          language: parsed.data.language,
+          captchaToken: parsed.data.captcha_token,
+        },
       });
-      reply.headers({
-        'x-joblens-analysis-source': 'model',
-        'x-joblens-ai-provider': extraction.provider,
-        'x-joblens-ai-model': extraction.model,
-        'x-joblens-ai-latency-ms': String(extraction.latencyMs),
-      });
-      setQuotaHeaders(reply, quota.reservation.remaining, quota.reservation.resetAt);
-      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, userAgent: request.headers['user-agent'], httpStatus: 200, aiCalled: true, provider: extraction.provider, model: extraction.model, latencyMs: extraction.latencyMs });
-      return reply.send(extraction.result);
     } catch (error) {
-      if (error instanceof LlmConfigurationError) await refundAiQuota(quota.reservation);
-      const timedOut = error instanceof ScreenshotExtractionTimeoutError;
-      const noJobInformation = error instanceof ScreenshotNoJobInformationError;
-      const httpStatus = timedOut ? 504 : noJobInformation ? 422 : 502;
-      const errorCode = timedOut ? 'OCR_TIMEOUT' : noJobInformation ? 'NO_JOB_INFORMATION' : 'OCR_UNAVAILABLE';
-      const errorMessage = timedOut ? '截图识别超时' : noJobInformation ? '截图中未找到招聘信息' : '截图识别服务暂时不可用';
-      await logApiRequest({ requestId, apiPath, method: 'POST', visitorId, ip: request.ip, httpStatus, errorCode, errorMessage });
-      if (!noJobInformation) logInternalFailure(request, 'screenshot_extraction', error);
-      return reply.status(httpStatus).send(buildErrorResponse(errorCode, timedOut
-        ? '截图识别超时，请重试或手动填写。'
-        : noJobInformation
-          ? '截图中未识别到可用的招聘信息，请上传包含岗位职责或任职要求的截图。'
-          : '截图识别服务暂时不可用，请稍后重试或手动填写。'));
-    } finally {
-      await releaseAiConcurrency(lease);
+      await handleOcrFailure({ error, request, reply, requestId, visitorId, apiPath });
+    }
+  });
+
+  app.post('/api/ocr/extract-job-v2', {
+    bodyLimit: MAX_MULTIPART_BODY_BYTES,
+  }, async (request, reply) => {
+    const visitorId = requireVisitorId(request, reply);
+    if (!visitorId) return;
+    const requestId = generateId('req');
+    const apiPath = '/api/ocr/extract-job-v2';
+    try {
+      const contentLength = request.headers['content-length'];
+      if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_MULTIPART_BODY_BYTES) {
+        throw new OcrUploadError('OCR_MULTIPART_BODY_TOO_LARGE');
+      }
+      const input = await parseOcrMultipart(request, app);
+      await runOcrPipeline({ request, reply, requestId, visitorId, apiPath, input });
+    } catch (error) {
+      await handleOcrFailure({ error, request, reply, requestId, visitorId, apiPath });
     }
   });
 

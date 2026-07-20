@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, AlertCircle, Trash2, RefreshCw } from 'lucide-react';
 import {
@@ -54,44 +54,67 @@ export function ReportPage() {
   const [deleteCaptchaRequired, setDeleteCaptchaRequired] = useState(false);
   const [deleteCaptchaToken, setDeleteCaptchaToken] = useState('');
   const [deleteCaptchaResetSignal, setDeleteCaptchaResetSignal] = useState(0);
+  const loadController = useRef<AbortController | null>(null);
+  const deleteController = useRef<AbortController | null>(null);
+  const feedbackController = useRef<AbortController | null>(null);
 
   const loadReport = useCallback(async () => {
     if (!id) return;
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
     setIsLoading(true);
     setError('');
     try {
-      const data = await api.reports.get(id, locale);
+      const data = await api.reports.get(id, locale, { signal: controller.signal });
+      if (loadController.current !== controller) return;
       setReport(data);
     } catch (err) {
+      if (loadController.current !== controller || (err instanceof ApiRequestError && err.code === 'CLIENT_CANCELLED')) return;
       const errorMsg = !isEnglish && err instanceof Error ? err.message : copy.loadFailed;
       setError(errorMsg);
     } finally {
-      setIsLoading(false);
+      if (loadController.current === controller) {
+        loadController.current = null;
+        setIsLoading(false);
+      }
     }
   }, [copy.loadFailed, id, isEnglish, locale]);
 
   useEffect(() => {
-    loadReport();
+    void loadReport();
   }, [loadReport]);
+
+  useEffect(() => () => {
+    loadController.current?.abort();
+    deleteController.current?.abort();
+    feedbackController.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (!report || window.location.hash !== '#follow-up-questions') return;
-    window.requestAnimationFrame(() => {
+    const frame = window.requestAnimationFrame(() => {
       document.getElementById('follow-up-questions')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
+    return () => window.cancelAnimationFrame(frame);
   }, [report]);
 
   const handleDelete = useCallback(async () => {
     if (!id || !window.confirm(copy.confirmDelete)) {
       return;
     }
+    deleteController.current?.abort();
+    const controller = new AbortController();
+    deleteController.current = controller;
     setIsDeleting(true);
     setActionError('');
     try {
-      await api.reports.delete(id, deleteCaptchaToken || undefined);
+      await api.reports.delete(id, deleteCaptchaToken || undefined, { signal: controller.signal });
+      if (deleteController.current !== controller) return;
       if (localStorage.getItem('latest_report_id') === id) localStorage.removeItem('latest_report_id');
       window.location.href = '/';
     } catch (err) {
+      if (deleteController.current !== controller || (err instanceof ApiRequestError && err.code === 'CLIENT_CANCELLED')) return;
       if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
         setDeleteCaptchaRequired(true);
         setActionError(copy.deleteRateLimited);
@@ -104,20 +127,27 @@ export function ReportPage() {
         setActionError(!isEnglish && err instanceof Error ? err.message : copy.deleteFailed);
       }
     } finally {
-      setIsDeleting(false);
+      if (deleteController.current === controller) {
+        deleteController.current = null;
+        setIsDeleting(false);
+      }
     }
   }, [copy.captchaExpired, copy.confirmDelete, copy.deleteFailed, copy.deleteRateLimited, deleteCaptchaToken, id, isEnglish]);
 
   const handleFeedback = useCallback(async (data: { type: string; content: string }) => {
     if (!id) return;
+    feedbackController.current?.abort();
+    const controller = new AbortController();
+    feedbackController.current = controller;
     try {
       await api.feedbacks.report({
         report_id: id,
         feedback_type: data.type as ReportFeedbackRequest['feedback_type'],
         content: data.content,
         captcha_token: captchaToken || undefined,
-      });
+      }, { signal: controller.signal });
     } catch (err) {
+      if (feedbackController.current !== controller || (err instanceof ApiRequestError && err.code === 'CLIENT_CANCELLED')) return;
       if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
         setCaptchaRequired(true);
       } else if (err instanceof ApiRequestError && err.code === 'CAPTCHA_FAILED') {
@@ -126,6 +156,8 @@ export function ReportPage() {
         setCaptchaResetSignal(value => value + 1);
       }
       throw err;
+    } finally {
+      if (feedbackController.current === controller) feedbackController.current = null;
     }
   }, [captchaToken, id]);
 

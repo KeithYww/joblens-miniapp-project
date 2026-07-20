@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, Settings, CheckCircle2 } from 'lucide-react';
 import { setApiBaseUrl, getStoredApiBaseUrl } from '@/api';
 import { useI18n } from '@/i18n';
@@ -12,6 +12,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const { t } = useI18n();
   const [apiUrl, setApiUrl] = useState('');
   const [saved, setSaved] = useState(false);
+  const savedTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -20,17 +21,28 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     }
   }, [isOpen]);
 
+  useEffect(() => () => {
+    if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
+  }, []);
+
+  const showSaved = () => {
+    setSaved(true);
+    if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
+    savedTimerRef.current = window.setTimeout(() => {
+      savedTimerRef.current = null;
+      setSaved(false);
+    }, 2000);
+  };
+
   const handleSave = () => {
     setApiBaseUrl(apiUrl);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    showSaved();
   };
 
   const handleClear = () => {
     setApiUrl('');
     setApiBaseUrl('');
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    showSaved();
   };
 
   if (!isOpen) return null;

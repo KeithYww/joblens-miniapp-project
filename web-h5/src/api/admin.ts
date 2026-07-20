@@ -1,13 +1,20 @@
+import { ClientApiError, requestJson, type ClientApiErrorDetails } from './request';
+
 const configuredApiUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const API_BASE_URL = configuredApiUrl.replace(/\/+$/, '').replace(/\/api$/, '');
 
-export class AdminApiError extends Error {
-  readonly status: number;
+export class AdminApiError extends ClientApiError {
+  declare readonly status: number;
 
-  constructor(status: number, message: string) {
-    super(message);
+  constructor(status: number, message: string);
+  constructor(details: ClientApiErrorDetails);
+  constructor(statusOrDetails: number | ClientApiErrorDetails, message?: string) {
+    const details = typeof statusOrDetails === 'number'
+      ? { kind: 'http' as const, code: 'HTTP_ERROR', status: statusOrDetails, message: message || '管理服务暂时不可用。' }
+      : statusOrDetails;
+    super(details);
     this.name = 'AdminApiError';
-    this.status = status;
+    this.status = details.status ?? 0;
   }
 }
 
@@ -105,38 +112,32 @@ interface Page<T> {
   items: T[];
 }
 
-async function request<T>(token: string, path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+export interface AdminRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+async function request<T>(token: string, path: string, options: RequestInit = {}, requestOptions: AdminRequestOptions = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  headers.set('Content-Type', 'application/json');
+  headers.set('Authorization', `Bearer ${token}`);
+  return requestJson<T>(`${API_BASE_URL}${path}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...options.headers,
-    },
-  });
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    throw new AdminApiError(response.status, '服务响应格式异常。');
-  }
-  if (!response.ok) {
-    const message = typeof body === 'object' && body && 'message' in body && typeof body.message === 'string'
-      ? body.message
-      : '管理服务暂时不可用。';
-    throw new AdminApiError(response.status, message);
-  }
-  return body as T;
+    headers,
+    signal: requestOptions.signal,
+    timeoutMs: requestOptions.timeoutMs ?? 15_000,
+  }, (details) => new AdminApiError(details));
 }
 
 export const adminApi = {
-  overview: (token: string, days: number) => request<AdminOverview>(token, `/api/admin/overview?days=${days}`),
-  reports: (token: string, params: URLSearchParams) => request<Page<AdminReport>>(token, `/api/admin/reports?${params}`),
-  feedbacks: (token: string, params: URLSearchParams) => request<Page<AdminFeedback>>(token, `/api/admin/feedbacks?${params}`),
-  reviewFeedback: (token: string, kind: AdminFeedback['kind'], id: string, status: string, reviewerNote: string) => request<{ status: string; reviewed_at: string | null }>(
+  overview: (token: string, days: number, options?: AdminRequestOptions) => request<AdminOverview>(token, `/api/admin/overview?days=${days}`, {}, options),
+  reports: (token: string, params: URLSearchParams, options?: AdminRequestOptions) => request<Page<AdminReport>>(token, `/api/admin/reports?${params}`, {}, options),
+  feedbacks: (token: string, params: URLSearchParams, options?: AdminRequestOptions) => request<Page<AdminFeedback>>(token, `/api/admin/feedbacks?${params}`, {}, options),
+  reviewFeedback: (token: string, kind: AdminFeedback['kind'], id: string, status: string, reviewerNote: string, requestOptions?: AdminRequestOptions) => request<{ status: string; reviewed_at: string | null }>(
     token,
     `/api/admin/feedbacks/${kind}/${id}`,
     { method: 'PATCH', body: JSON.stringify({ status, reviewer_note: reviewerNote }) },
+    requestOptions,
   ),
-  security: (token: string, days: number) => request<AdminSecurity>(token, `/api/admin/security?days=${days}`),
+  security: (token: string, days: number, options?: AdminRequestOptions) => request<AdminSecurity>(token, `/api/admin/security?days=${days}`, {}, options),
 };

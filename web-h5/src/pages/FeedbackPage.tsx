@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { ArrowLeft, CheckCircle, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, ApiRequestError } from '@/api';
@@ -95,6 +95,9 @@ export function FeedbackPage() {
   const [captchaRequired, setCaptchaRequired] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
   const [captchaResetSignal, setCaptchaResetSignal] = useState(0);
+  const submitController = useRef<AbortController | null>(null);
+
+  useEffect(() => () => submitController.current?.abort(), []);
 
   const handleSubmit = useCallback(async () => {
     if (!companyName.trim() || !jobTitle.trim() || !jdClaim.trim() || !interviewActual.trim()) {
@@ -103,6 +106,9 @@ export function FeedbackPage() {
     }
 
     setError('');
+    submitController.current?.abort();
+    const controller = new AbortController();
+    submitController.current = controller;
     setIsLoading(true);
 
     const data: InterviewFeedbackRequest = {
@@ -121,9 +127,11 @@ export function FeedbackPage() {
     };
 
     try {
-      await api.feedbacks.interview(data);
+      await api.feedbacks.interview(data, { signal: controller.signal });
+      if (submitController.current !== controller) return;
       setSubmitted(true);
     } catch (err) {
+      if (submitController.current !== controller || (err instanceof ApiRequestError && err.code === 'CLIENT_CANCELLED')) return;
       if (err instanceof ApiRequestError && err.code === 'CAPTCHA_REQUIRED') {
         setCaptchaRequired(true);
         setError(copy.captchaRequired);
@@ -136,7 +144,10 @@ export function FeedbackPage() {
         setError(!isEnglish && err instanceof Error ? err.message : copy.submitFailed);
       }
     } finally {
-      setIsLoading(false);
+      if (submitController.current === controller) {
+        submitController.current = null;
+        setIsLoading(false);
+      }
     }
   }, [
     companyName,

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle, AlertCircle, Info, Copy } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import type { RiskLevel, Confidence } from '@/types';
@@ -191,6 +191,11 @@ export function QuestionCard({ questions }: { questions: string[] }) {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [copyFailedIndex, setCopyFailedIndex] = useState<number | null>(null);
   const [showAllQuestions, setShowAllQuestions] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+  }, []);
 
   const copyToClipboard = useCallback(async (text: string, index: number) => {
     setCopyFailedIndex(null);
@@ -207,7 +212,11 @@ export function QuestionCard({ questions }: { questions: string[] }) {
       }
 
       setCopiedIndex(index);
-      setTimeout(() => setCopiedIndex(null), 2000);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = null;
+        setCopiedIndex(null);
+      }, 2000);
     } catch {
       setCopiedIndex(null);
       setCopyFailedIndex(index);

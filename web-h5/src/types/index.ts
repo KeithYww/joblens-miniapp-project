@@ -59,6 +59,29 @@ export interface ScreenshotExtractRequest {
   captcha_token?: string;
 }
 
+export type ScreenshotMime = 'image/png' | 'image/jpeg' | 'image/webp';
+
+export interface ScreenshotAsset {
+  id: string;
+  file: File | Blob;
+  name: string;
+  mime: ScreenshotMime;
+  originalBytes: number;
+  uploadBytes: number;
+  width?: number;
+  height?: number;
+}
+
+export interface ScreenshotExtractV2Request {
+  images: File[];
+  language?: 'zh-CN' | 'en-US';
+  captcha_token?: string;
+}
+
+export interface ApiCapabilities {
+  preferred_ocr_upload_mode: 'json-v1' | 'multipart-v2';
+}
+
 export interface ScreenshotExtractResult {
   jd_text: string;
   company_name?: string;

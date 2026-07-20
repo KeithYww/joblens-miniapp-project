@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -b",
-    "test": "NODE_ENV=test node --import tsx --test src/services/aiCostControl.test.ts src/services/llm/common.test.ts src/services/llm/riskRules.test.ts src/services/rateLimit/index.test.ts src/services/screenshotCache.test.ts src/services/screenshotExtraction.test.ts tests/admin-routes.test.ts tests/ai-cost-control-routes.test.ts tests/production-hardening.test.ts tests/server-hardening.test.ts tests/synthetic-regression.test.ts tests/english-synthetic-regression.test.ts",
+    "test": "NODE_ENV=test node --import tsx --test src/services/aiCostControl.test.ts src/services/llm/common.test.ts src/services/llm/riskRules.test.ts src/services/rateLimit/index.test.ts src/services/screenshotCache.test.ts src/services/screenshotExtraction.test.ts tests/admin-routes.test.ts tests/ai-cost-control-routes.test.ts tests/ocr-multipart-v2.test.ts tests/production-hardening.test.ts tests/server-hardening.test.ts tests/synthetic-regression.test.ts tests/english-synthetic-regression.test.ts",
     "test:regression": "NODE_ENV=test node --import tsx --test tests/synthetic-regression.test.ts tests/english-synthetic-regression.test.ts",
     "test:redis": "NODE_ENV=test node --import tsx --test tests/ai-cost-control-redis.test.ts",
     "start": "node dist/index.js",
@@ -21,11 +21,13 @@
   "type": "commonjs",
   "dependencies": {
     "@fastify/cors": "^10.1.0",
+    "@fastify/multipart": "^9.4.0",
     "@prisma/client": "^6.19.3",
     "axios": "^1.18.1",
     "fastify": "^5.10.0",
     "ioredis": "^5.11.1",
     "prisma": "^6.19.3",
+    "sharp": "^0.34.5",
     "zod": "^3.25.76"
   },
   "devDependencies": {
