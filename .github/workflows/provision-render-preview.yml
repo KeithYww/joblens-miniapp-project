@@ -152,6 +152,9 @@ jobs:
               --data '{"value":"managed"}' \
               "$RENDER_API/services/$service_id/env-vars/CAPTCHA_MODE" >/dev/null
             request -X PUT -H 'Content-Type: application/json' \
+              --data '{"value":"multipart-v2"}' \
+              "$RENDER_API/services/$service_id/env-vars/OCR_UPLOAD_MODE" >/dev/null
+            request -X PUT -H 'Content-Type: application/json' \
               --data '{"value":"joblens-miniapp.vercel.app"}' \
               "$RENDER_API/services/$service_id/env-vars/TURNSTILE_EXPECTED_HOSTNAME" >/dev/null
             request -X PUT -H 'Content-Type: application/json' \
